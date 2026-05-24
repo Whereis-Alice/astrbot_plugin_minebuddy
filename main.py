@@ -23,7 +23,7 @@ from .script_executor import ScriptExecutor
     "astrbot_plugin_minebuddy",
     "MineBuddy",
     "MineBuddy Minecraft Bot 插件 - MC/群聊上下文互通 + LLM工具控制Bot",
-    "1.2.2",
+    "1.2.3",
     "",
 )
 class MineBuddyPlugin(Star):
@@ -81,6 +81,7 @@ class MineBuddyPlugin(Star):
         self._bot_process = None
         self._bot_log_thread = None
         self._bot_service_ready = False
+        self._bot_service_issue = ""
         self._agent_task: Optional[asyncio.Task] = None
         self._last_health_alert = 0
         self._last_food_alert = 0
@@ -94,6 +95,7 @@ class MineBuddyPlugin(Star):
             self._bot_service_ready = await self._start_bot_service()
         else:
             self._bot_service_ready = True
+            self._bot_service_issue = ""
         
         # 初始化 Bot 客户端
         self.bot_client = BotClient(self.bot_http_url, self.bot_ws_url)
@@ -120,10 +122,8 @@ class MineBuddyPlugin(Star):
         can_start_ws = True
         if self.auto_start_bot and not self._bot_service_ready:
             can_start_ws = False
-            logger.error(
-                "[MineBuddy] Node Bot 服务未就绪，已跳过 WebSocket 监听。"
-                " 请先在插件服务器上的 bot 目录执行 npm install，然后重载插件。"
-            )
+            issue = self._bot_service_issue or "请先处理上面的 Node Bot 启动错误，然后重载插件。"
+            logger.error(f"[MineBuddy] Node Bot 服务未就绪，已跳过 WebSocket 监听。{issue}")
         elif not await self.bot_client.health_check():
             can_start_ws = False
             logger.warning("[MineBuddy] Bot HTTP 服务当前不可用，暂不启动 WebSocket 监听。")
@@ -172,12 +172,23 @@ class MineBuddyPlugin(Star):
         if not server_js.exists():
             logger.error(f"[MineBuddy] Bot 入口文件不存在: {server_js}")
             logger.error(f"[MineBuddy] 请在配置中设置正确的 bot_dir，或将 Bot 目录放在插件同级")
+            self._bot_service_issue = "Bot 入口文件不存在，请检查 bot_dir 配置。"
             return False
+
+        existing_service = await self._probe_existing_bot_service()
+        if existing_service:
+            logger.warning(
+                f"[MineBuddy] 检测到端口 {self.bot_service_port} 上已有可用的 MineBuddy 服务，"
+                " 本次将直接复用现有实例，不再重复启动新的 Node 进程。"
+            )
+            self._bot_service_issue = ""
+            return True
 
         missing_deps = self._find_missing_node_dependencies(bot_path)
         if missing_deps:
             logger.error(f"[MineBuddy] Node 依赖缺失: {', '.join(missing_deps)}")
             logger.error(f"[MineBuddy] 请在插件服务器执行: cd {bot_path} && npm install")
+            self._bot_service_issue = f"Node 依赖缺失，请在 {bot_path} 执行 npm install。"
             return False
         
         # 构造环境变量，传入 MC 配置
@@ -212,15 +223,31 @@ class MineBuddyPlugin(Star):
             # 等待服务就绪
             await asyncio.sleep(3)
             if self._bot_process.poll() is not None:
+                return_code = self._bot_process.returncode
+                self._bot_process = None
                 logger.error(
-                    f"[MineBuddy] Bot 服务启动后很快退出，退出码: {self._bot_process.returncode}。"
+                    f"[MineBuddy] Bot 服务启动后很快退出，退出码: {return_code}。"
                     " 请检查上面的 [MineBuddy/Node] 日志。"
                 )
+                existing_service = await self._probe_existing_bot_service()
+                if existing_service:
+                    logger.warning(
+                        f"[MineBuddy] 虽然新的 Node 进程退出了，但端口 {self.bot_service_port} 上已有可用的 MineBuddy 服务。"
+                        " 当前插件将直接复用这个已有实例。"
+                    )
+                    self._bot_service_issue = ""
+                    return True
                 if self._is_local_port_open(self.bot_service_port):
                     logger.warning(
                         f"[MineBuddy] 端口 {self.bot_service_port} 仍然有服务在监听，"
                         " 可能是旧的 Bot 进程没有退出，当前 WebSocket/HTTP 连接到的未必是这次启动的进程。"
                     )
+                    self._bot_service_issue = (
+                        f"端口 {self.bot_service_port} 已被其他进程占用。"
+                        " 请清理旧的 Node Bot 进程后再重载插件。"
+                    )
+                else:
+                    self._bot_service_issue = "Node Bot 进程启动后立即退出，请检查上面的 [MineBuddy/Node] 日志。"
                 return False
 
             if not await self._wait_for_bot_service_health():
@@ -228,19 +255,36 @@ class MineBuddyPlugin(Star):
                     f"[MineBuddy] Bot 服务在端口 {self.bot_service_port} 上未通过健康检查，"
                     " 请检查 Node 依赖、端口占用和上面的 [MineBuddy/Node] 日志。"
                 )
+                existing_service = await self._probe_existing_bot_service()
+                if existing_service:
+                    logger.warning(
+                        f"[MineBuddy] 端口 {self.bot_service_port} 上已有可用的 MineBuddy 服务，"
+                        " 当前插件将继续复用该实例。"
+                    )
+                    self._bot_service_issue = ""
+                    return True
                 if self._is_local_port_open(self.bot_service_port):
                     logger.warning(
                         f"[MineBuddy] 端口 {self.bot_service_port} 已被其他进程占用，"
                         " 当前插件可能连到的是旧服务。"
                     )
+                    self._bot_service_issue = (
+                        f"端口 {self.bot_service_port} 已被占用，且现有服务未通过 MineBuddy 状态检查。"
+                        " 请确认旧进程是否需要清理。"
+                    )
+                else:
+                    self._bot_service_issue = "Node Bot 服务健康检查失败，请检查上面的 [MineBuddy/Node] 日志。"
                 return False
 
+            self._bot_service_issue = ""
             return True
         except FileNotFoundError:
             logger.error("[MineBuddy] 未找到 node 命令，请确保 Node.js 已安装并在 PATH 中")
+            self._bot_service_issue = "未找到 node 命令，请确认 Node.js 已正确安装。"
             return False
         except Exception as e:
             logger.error(f"[MineBuddy] 启动 Bot 服务失败: {e}")
+            self._bot_service_issue = f"启动 Bot 服务失败: {e}"
             return False
     
     async def _stop_bot_service(self):
@@ -328,26 +372,41 @@ class MineBuddyPlugin(Star):
 
     async def _wait_for_bot_service_health(self, timeout: float = 8.0) -> bool:
         """Wait until the local bot HTTP service reports healthy."""
-        import httpx
-
         deadline = asyncio.get_running_loop().time() + timeout
-        health_url = f"http://127.0.0.1:{self.bot_service_port}/health"
 
         while asyncio.get_running_loop().time() < deadline:
+            existing_service = await self._probe_existing_bot_service(timeout=2.0)
+            if existing_service:
+                return True
+
             if self._bot_process and self._bot_process.poll() is not None:
                 return False
-
-            try:
-                async with httpx.AsyncClient(timeout=2.0) as client:
-                    response = await client.get(health_url)
-                    if response.status_code == 200:
-                        return True
-            except Exception:
-                pass
 
             await asyncio.sleep(0.5)
 
         return False
+
+    async def _probe_existing_bot_service(self, timeout: float = 1.5):
+        """Return MineBuddy status payload when an existing local bot service is available."""
+        import httpx
+
+        status_url = f"http://127.0.0.1:{self.bot_service_port}/status"
+
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                response = await client.get(status_url)
+                response.raise_for_status()
+                payload = response.json()
+        except Exception:
+            return None
+
+        if not isinstance(payload, dict):
+            return None
+
+        if "username" not in payload or "connected" not in payload:
+            return None
+
+        return payload
     
     def _migrate_bundled_skills(self, target_dir: str):
         """首次运行时，将插件自带的技能复制到数据目录"""
