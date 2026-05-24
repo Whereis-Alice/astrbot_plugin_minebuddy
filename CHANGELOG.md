@@ -2,6 +2,15 @@
 
 本文档记录 MineBuddy 分支的重要变更。
 
+## [1.2.4] - 2026-05-25
+
+### 优化
+
+- 启动前若发现 `bot_service_port` 已经被别的本地服务占用，会直接停止继续拉起新的 Node 进程，并把 `/status`、`/health` 的探测结果写进日志，避免只看到一串 `EADDRINUSE` 却不知道到底是谁占着端口。
+- Python 侧对本地 Bot 服务的探测逻辑增强为“优先识别 MineBuddy 服务签名，再回退检查状态接口”，后续复用旧实例、健康检查、端口冲突提示都会更准确。
+- `mc_connect` 遇到 `426 Upgrade Required` 时，现在会明确提示“当前端口上的服务不像 MineBuddy HTTP API”，更方便定位成端口被错误服务占用，而不是误以为是 MC 连接失败。
+- Node 侧 `/health` 与 `/status` 现在会带上 `service/version` 签名，启动失败时也会输出更直接的致命错误说明，方便从 AstrBot 日志快速判断问题。
+
 ## [1.2.3] - 2026-05-25
 
 ### 优化

@@ -84,6 +84,12 @@ class BotClient:
             payload = None
 
         if response.is_error:
+            if response.status_code == 426:
+                raise RuntimeError(
+                    f"{self.base_url} 当前返回 426 Upgrade Required，"
+                    "该端口上的服务不像 MineBuddy 的 HTTP API，"
+                    "请检查是否有旧进程或其他程序占用了 bot_service_port。"
+                )
             if isinstance(payload, dict):
                 message = payload.get("message") or f"HTTP {response.status_code}"
                 details = payload.get("details") or payload.get("connection", {}).get("lastConnectError")
@@ -108,7 +114,26 @@ class BotClient:
         """Check if bot service is healthy"""
         try:
             response = await self.http_client.get("/health")
-            return response.status_code == 200
+            payload = response.json()
+            if (
+                response.status_code == 200
+                and isinstance(payload, dict)
+                and payload.get("status") == "healthy"
+                and str(payload.get("service", "")).lower() == "minebuddy"
+            ):
+                return True
+        except Exception:
+            pass
+
+        try:
+            response = await self.http_client.get("/status")
+            payload = response.json()
+            return (
+                response.status_code == 200
+                and isinstance(payload, dict)
+                and "username" in payload
+                and "connected" in payload
+            )
         except Exception:
             return False
     

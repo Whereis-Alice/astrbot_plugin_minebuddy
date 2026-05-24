@@ -5,7 +5,7 @@ import { BotServer } from './server.js';
  */
 async function main() {
   console.log('╔═══════════════════════════════════════╗');
-  console.log('║     MineBuddy Bot Service v0.2.0      ║');
+  console.log('║     MineBuddy Bot Service v0.2.1      ║');
   console.log('╚═══════════════════════════════════════╝');
   console.log('');
 
@@ -29,4 +29,19 @@ async function main() {
   console.log('');
 }
 
-main().catch(console.error);
+main().catch((error) => {
+  const port = parseInt(process.env.BOT_SERVICE_PORT || '3001', 10);
+  if (error?.code === 'EADDRINUSE') {
+    console.error(
+      `[Fatal] Bot service port ${port} is already in use. ` +
+      'Please stop the old MineBuddy process or change bot_service_port.'
+    );
+  } else {
+    console.error('[Fatal] Bot service failed to start:', error?.message || error);
+  }
+
+  if (error?.stack) {
+    console.error(error.stack);
+  }
+  process.exit(1);
+});

@@ -6,6 +6,9 @@ import { Actions } from './actions.js';
 import { Observer } from './observer.js';
 import { config } from './config.js';
 
+const SERVICE_NAME = 'minebuddy';
+const SERVICE_VERSION = '0.2.1';
+
 /**
  * HTTP/WebSocket Server for the Mineflayer Bot
  * Provides API for Python backend to control the bot
@@ -44,7 +47,11 @@ class BotServer {
   _setupRoutes() {
     // Health check
     this.app.get('/health', (req, res) => {
-      res.json({ status: 'healthy' });
+      res.json({
+        status: 'healthy',
+        service: SERVICE_NAME,
+        version: SERVICE_VERSION,
+      });
     });
 
     // Get bot status
@@ -65,6 +72,8 @@ class BotServer {
       };
 
       res.json({
+        service: SERVICE_NAME,
+        version: SERVICE_VERSION,
         connected: connection.connected,
         username: config.minecraft.username,
         connection,
@@ -331,8 +340,24 @@ class BotServer {
   }
 
   start(port = 3001) {
-    return new Promise((resolve) => {
-      this.server.listen(port, async () => {
+    return new Promise((resolve, reject) => {
+      let settled = false;
+
+      const finishError = (error) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        this.server.off('error', finishError);
+        this.wss.off('error', finishError);
+        reject(error);
+      };
+
+      const finishReady = async () => {
+        if (settled) {
+          return;
+        }
+
         console.log(`[Server] Bot service running on port ${port}`);
         console.log(`[Server] HTTP API: http://localhost:${port}`);
         console.log(`[Server] WebSocket: ws://localhost:${port}`);
@@ -353,8 +378,17 @@ class BotServer {
             console.error('[Server] Auto-connect details:', this.bot?.getConnectionStatus?.());
           }
         }
-        
+
+        settled = true;
+        this.server.off('error', finishError);
+        this.wss.off('error', finishError);
         resolve();
+      };
+
+      this.server.once('error', finishError);
+      this.wss.once('error', finishError);
+      this.server.listen(port, () => {
+        void finishReady();
       });
     });
   }

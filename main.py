@@ -23,7 +23,7 @@ from .script_executor import ScriptExecutor
     "astrbot_plugin_minebuddy",
     "MineBuddy",
     "MineBuddy Minecraft Bot 插件 - MC/群聊上下文互通 + LLM工具控制Bot",
-    "1.2.3",
+    "1.2.4",
     "",
 )
 class MineBuddyPlugin(Star):
@@ -184,6 +184,15 @@ class MineBuddyPlugin(Star):
             self._bot_service_issue = ""
             return True
 
+        if self._is_local_port_open(self.bot_service_port):
+            port_diagnosis = await self._diagnose_local_service(timeout=2.0)
+            logger.error(
+                f"[MineBuddy] 端口 {self.bot_service_port} 已被其他本地服务占用，"
+                f"无法启动新的 Node Bot。{port_diagnosis}"
+            )
+            self._bot_service_issue = f"端口 {self.bot_service_port} 已被占用。{port_diagnosis}"
+            return False
+
         missing_deps = self._find_missing_node_dependencies(bot_path)
         if missing_deps:
             logger.error(f"[MineBuddy] Node 依赖缺失: {', '.join(missing_deps)}")
@@ -238,13 +247,13 @@ class MineBuddyPlugin(Star):
                     self._bot_service_issue = ""
                     return True
                 if self._is_local_port_open(self.bot_service_port):
+                    port_diagnosis = await self._diagnose_local_service(timeout=2.0)
                     logger.warning(
                         f"[MineBuddy] 端口 {self.bot_service_port} 仍然有服务在监听，"
                         " 可能是旧的 Bot 进程没有退出，当前 WebSocket/HTTP 连接到的未必是这次启动的进程。"
                     )
                     self._bot_service_issue = (
-                        f"端口 {self.bot_service_port} 已被其他进程占用。"
-                        " 请清理旧的 Node Bot 进程后再重载插件。"
+                        f"端口 {self.bot_service_port} 已被其他进程占用。{port_diagnosis}"
                     )
                 else:
                     self._bot_service_issue = "Node Bot 进程启动后立即退出，请检查上面的 [MineBuddy/Node] 日志。"
@@ -264,13 +273,13 @@ class MineBuddyPlugin(Star):
                     self._bot_service_issue = ""
                     return True
                 if self._is_local_port_open(self.bot_service_port):
+                    port_diagnosis = await self._diagnose_local_service(timeout=2.0)
                     logger.warning(
                         f"[MineBuddy] 端口 {self.bot_service_port} 已被其他进程占用，"
                         " 当前插件可能连到的是旧服务。"
                     )
                     self._bot_service_issue = (
-                        f"端口 {self.bot_service_port} 已被占用，且现有服务未通过 MineBuddy 状态检查。"
-                        " 请确认旧进程是否需要清理。"
+                        f"端口 {self.bot_service_port} 已被占用，且现有服务未通过 MineBuddy 状态检查。{port_diagnosis}"
                     )
                 else:
                     self._bot_service_issue = "Node Bot 服务健康检查失败，请检查上面的 [MineBuddy/Node] 日志。"
@@ -386,27 +395,98 @@ class MineBuddyPlugin(Star):
 
         return False
 
-    async def _probe_existing_bot_service(self, timeout: float = 1.5):
-        """Return MineBuddy status payload when an existing local bot service is available."""
+    async def _request_local_service(self, path: str, timeout: float = 1.5):
+        """Fetch JSON/text from the local bot port for diagnostics."""
         import httpx
 
-        status_url = f"http://127.0.0.1:{self.bot_service_port}/status"
+        url = f"http://127.0.0.1:{self.bot_service_port}{path}"
 
         try:
             async with httpx.AsyncClient(timeout=timeout) as client:
-                response = await client.get(status_url)
-                response.raise_for_status()
-                payload = response.json()
-        except Exception:
-            return None
+                response = await client.get(url)
+                text = response.text
+                try:
+                    payload = response.json()
+                except Exception:
+                    payload = None
+        except Exception as e:
+            return {"path": path, "error": f"{type(e).__name__}: {e}"}
 
-        if not isinstance(payload, dict):
-            return None
+        return {
+            "path": path,
+            "status_code": response.status_code,
+            "payload": payload,
+            "text": text[:160],
+        }
 
-        if "username" not in payload or "connected" not in payload:
-            return None
+    def _is_minebuddy_health_payload(self, payload) -> bool:
+        return (
+            isinstance(payload, dict)
+            and payload.get("status") == "healthy"
+            and str(payload.get("service", "")).lower() == "minebuddy"
+        )
 
-        return payload
+    def _is_minebuddy_status_payload(self, payload) -> bool:
+        return (
+            isinstance(payload, dict)
+            and "username" in payload
+            and "connected" in payload
+        )
+
+    def _format_local_service_result(self, result) -> str:
+        if not isinstance(result, dict):
+            return "无可用诊断结果"
+
+        path = result.get("path", "?")
+        error = result.get("error")
+        if error:
+            return f"{path} 请求失败({error})"
+
+        status_code = result.get("status_code")
+        payload = result.get("payload")
+        if self._is_minebuddy_status_payload(payload):
+            connection = payload.get("connection", {}) if isinstance(payload.get("connection"), dict) else {}
+            return (
+                f"{path} -> HTTP {status_code}，MineBuddy 状态接口正常"
+                f"(connected={payload.get('connected')}, state={connection.get('state', 'unknown')})"
+            )
+        if self._is_minebuddy_health_payload(payload):
+            return (
+                f"{path} -> HTTP {status_code}，MineBuddy 健康检查正常"
+                f"(version={payload.get('version', 'unknown')})"
+            )
+        if isinstance(payload, dict):
+            keys = ", ".join(sorted(str(k) for k in payload.keys())[:6])
+            return f"{path} -> HTTP {status_code}，返回了非 MineBuddy JSON(keys={keys})"
+
+        text = str(result.get("text") or "").strip().replace("\r", " ").replace("\n", " ")
+        if text:
+            return f"{path} -> HTTP {status_code}，响应片段: {text[:120]}"
+        return f"{path} -> HTTP {status_code}"
+
+    async def _diagnose_local_service(self, timeout: float = 1.5) -> str:
+        """Return a human-readable summary of what is listening on the bot port."""
+        status_result = await self._request_local_service("/status", timeout=timeout)
+        health_result = await self._request_local_service("/health", timeout=timeout)
+        parts = [
+            self._format_local_service_result(status_result),
+            self._format_local_service_result(health_result),
+        ]
+        return " | ".join(part for part in parts if part)
+
+    async def _probe_existing_bot_service(self, timeout: float = 1.5):
+        """Return MineBuddy status payload when an existing local bot service is available."""
+        status_result = await self._request_local_service("/status", timeout=timeout)
+        status_payload = status_result.get("payload") if isinstance(status_result, dict) else None
+        if self._is_minebuddy_status_payload(status_payload):
+            return status_payload
+
+        health_result = await self._request_local_service("/health", timeout=timeout)
+        health_payload = health_result.get("payload") if isinstance(health_result, dict) else None
+        if self._is_minebuddy_health_payload(health_payload):
+            return health_payload
+
+        return None
     
     def _migrate_bundled_skills(self, target_dir: str):
         """首次运行时，将插件自带的技能复制到数据目录"""
