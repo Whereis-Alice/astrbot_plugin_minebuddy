@@ -87,6 +87,158 @@ export class Actions {
     return null;
   }
 
+  _hasPvpBackend() {
+    return !!(this.mcBot?.pvp && typeof this.mcBot.pvp.attack === 'function');
+  }
+
+  async _stopPvpCombat(force = false) {
+    const pvp = this.mcBot?.pvp;
+    if (!pvp || !pvp.target) {
+      return false;
+    }
+
+    try {
+      if (force && typeof pvp.forceStop === 'function') {
+        pvp.forceStop();
+      } else if (typeof pvp.stop === 'function') {
+        await pvp.stop();
+      } else if (typeof pvp.forceStop === 'function') {
+        pvp.forceStop();
+      }
+      return true;
+    } catch (error) {
+      if (typeof pvp.forceStop === 'function') {
+        pvp.forceStop();
+        return true;
+      }
+      throw error;
+    }
+  }
+
+  async _attackWithPvp(target, targetLabel, equippedWeapon = null) {
+    const pvp = this.mcBot?.pvp;
+    if (!pvp || typeof pvp.attack !== 'function') {
+      return null;
+    }
+
+    pvp.followRange = 2;
+    pvp.attackRange = 3.3;
+    pvp.viewDistance = Math.max(pvp.viewDistance || 0, 48);
+
+    await pvp.attack(target);
+
+    const timeoutMs = 12000;
+    const startTime = Date.now();
+
+    while (Date.now() - startTime < timeoutMs) {
+      const liveTarget = this.mcBot.entities[target.id];
+      if (!liveTarget) {
+        return {
+          success: true,
+          message: `Defeated or lost ${targetLabel} with mineflayer-pvp`,
+          combatBackend: 'mineflayer-pvp',
+          weapon: equippedWeapon,
+        };
+      }
+
+      if (liveTarget.health !== undefined && liveTarget.health !== null && liveTarget.health <= 0) {
+        await this._stopPvpCombat();
+        return {
+          success: true,
+          message: `Defeated ${targetLabel} with mineflayer-pvp`,
+          combatBackend: 'mineflayer-pvp',
+          weapon: equippedWeapon,
+        };
+      }
+
+      await new Promise(resolve => setTimeout(resolve, 250));
+    }
+
+    await this._stopPvpCombat();
+    const liveTarget = this.mcBot.entities[target.id];
+    return {
+      success: false,
+      message: liveTarget
+        ? `mineflayer-pvp engaged ${targetLabel}, but the target was still alive after ${Math.round(timeoutMs / 1000)}s`
+        : `Defeated or lost ${targetLabel} with mineflayer-pvp`,
+      combatBackend: 'mineflayer-pvp',
+      weapon: equippedWeapon,
+      targetHealth: liveTarget?.health ?? null,
+    };
+  }
+
+  async _attackWithFallbackLoop(target, targetLabel, equippedWeapon = null) {
+    const maxAttackWindowMs = 9000;
+    const attackReach = 3.3;
+    const stopFollowDistance = 2;
+    const startTime = Date.now();
+    let swingCount = 0;
+
+    while (Date.now() - startTime < maxAttackWindowMs) {
+      if (!target || !this.mcBot.entities[target.id]) {
+        return {
+          success: swingCount > 0,
+          message: swingCount > 0 ? `Lost sight of ${targetLabel} after ${swingCount} hits` : `${targetLabel} disappeared before attack`,
+          hits: swingCount,
+          combatBackend: 'fallback',
+          weapon: equippedWeapon,
+        };
+      }
+
+      target = this.mcBot.entities[target.id];
+      const distance = this.mcBot.entity.position.distanceTo(target.position);
+
+      if (distance > attackReach) {
+        this.mcBot.pathfinder.setGoal(new goals.GoalFollow(target, stopFollowDistance), true);
+        await new Promise(resolve => setTimeout(resolve, 250));
+        continue;
+      }
+
+      this.mcBot.pathfinder.setGoal(null);
+
+      try {
+        await this.mcBot.lookAt(target.position.offset(0, Math.min(target.height || 1.6, 1.6), 0), true);
+      } catch (error) {
+        console.warn(`[attack] lookAt failed: ${error.message}`);
+      }
+
+      await this.mcBot.attack(target);
+      swingCount += 1;
+
+      await new Promise(resolve => setTimeout(resolve, 600));
+
+      const refreshedTarget = this.mcBot.entities[target.id];
+      if (!refreshedTarget) {
+        return {
+          success: true,
+          message: `Defeated or lost ${targetLabel} after ${swingCount} hits`,
+          hits: swingCount,
+          combatBackend: 'fallback',
+          weapon: equippedWeapon,
+        };
+      }
+
+      if (refreshedTarget.health !== undefined && refreshedTarget.health !== null && refreshedTarget.health <= 0) {
+        return {
+          success: true,
+          message: `Defeated ${targetLabel} in ${swingCount} hits`,
+          hits: swingCount,
+          combatBackend: 'fallback',
+          weapon: equippedWeapon,
+        };
+      }
+    }
+
+    this.mcBot.pathfinder.setGoal(null);
+    return {
+      success: swingCount > 0,
+      message: swingCount > 0 ? `Stopped attacking ${targetLabel} after ${swingCount} hits` : `Could not get close enough to attack ${targetLabel}`,
+      hits: swingCount,
+      combatBackend: 'fallback',
+      weapon: equippedWeapon,
+    };
+  }
+
   /**
    * Get available actions list
    * @returns {Array<{name: string, description: string, parameters: object}>}
@@ -464,6 +616,7 @@ export class Actions {
    * Navigate to coordinates with stuck detection
    */
   async goTo(x, y, z) {
+    await this._stopPvpCombat(true);
     const goal = new goals.GoalBlock(x, y, z);
     const STUCK_CHECK_INTERVAL = 2000;  // 每2秒检查一次
     const STUCK_THRESHOLD = 0.5;        // 移动小于0.5格视为没动
@@ -587,6 +740,7 @@ export class Actions {
    * Follow a player
    */
   async followPlayer(playerName) {
+    await this._stopPvpCombat(true);
     const player = this.mcBot.players[playerName];
     if (!player || !player.entity) {
       return { success: false, message: `Player ${playerName} not found or not in range` };
@@ -601,6 +755,7 @@ export class Actions {
    * Stop all movement
    */
   async stopMoving() {
+    await this._stopPvpCombat(true);
     this.mcBot.pathfinder.setGoal(null);
     this.mcBot.clearControlStates();
     return { success: true, message: 'Stopped moving' };
@@ -642,71 +797,18 @@ export class Actions {
       console.warn(`[attack] Failed to equip melee weapon: ${error.message}`);
     }
 
-    const maxAttackWindowMs = 9000;
-    const attackReach = 3.3;
-    const stopFollowDistance = 2;
-    const startTime = Date.now();
-    let swingCount = 0;
-
-    while (Date.now() - startTime < maxAttackWindowMs) {
-      if (!target || !this.mcBot.entities[target.id]) {
-        return {
-          success: swingCount > 0,
-          message: swingCount > 0 ? `Lost sight of ${targetLabel} after ${swingCount} hits` : `${targetLabel} disappeared before attack`,
-          hits: swingCount,
-          weapon: equippedWeapon,
-        };
-      }
-
-      target = this.mcBot.entities[target.id];
-      const distance = this.mcBot.entity.position.distanceTo(target.position);
-
-      if (distance > attackReach) {
-        this.mcBot.pathfinder.setGoal(new goals.GoalFollow(target, stopFollowDistance), true);
-        await new Promise(resolve => setTimeout(resolve, 250));
-        continue;
-      }
-
-      this.mcBot.pathfinder.setGoal(null);
-
+    if (this._hasPvpBackend()) {
       try {
-        await this.mcBot.lookAt(target.position.offset(0, Math.min(target.height || 1.6, 1.6), 0), true);
+        const pvpResult = await this._attackWithPvp(target, targetLabel, equippedWeapon);
+        if (pvpResult) {
+          return pvpResult;
+        }
       } catch (error) {
-        console.warn(`[attack] lookAt failed: ${error.message}`);
-      }
-
-      await this.mcBot.attack(target);
-      swingCount += 1;
-
-      await new Promise(resolve => setTimeout(resolve, 600));
-
-      const refreshedTarget = this.mcBot.entities[target.id];
-      if (!refreshedTarget) {
-        return {
-          success: true,
-          message: `Defeated or lost ${targetLabel} after ${swingCount} hits`,
-          hits: swingCount,
-          weapon: equippedWeapon,
-        };
-      }
-
-      if (refreshedTarget.health !== undefined && refreshedTarget.health !== null && refreshedTarget.health <= 0) {
-        return {
-          success: true,
-          message: `Defeated ${targetLabel} in ${swingCount} hits`,
-          hits: swingCount,
-          weapon: equippedWeapon,
-        };
+        console.warn(`[attack] mineflayer-pvp failed, falling back to manual combat: ${error.message}`);
       }
     }
 
-    this.mcBot.pathfinder.setGoal(null);
-    return {
-      success: swingCount > 0,
-      message: swingCount > 0 ? `Stopped attacking ${targetLabel} after ${swingCount} hits` : `Could not get close enough to attack ${targetLabel}`,
-      hits: swingCount,
-      weapon: equippedWeapon,
-    };
+    return await this._attackWithFallbackLoop(target, targetLabel, equippedWeapon);
   }
 
   /**

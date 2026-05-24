@@ -23,7 +23,7 @@ from .script_executor import ScriptExecutor
     "astrbot_plugin_minebuddy",
     "MineBuddy",
     "MineBuddy Minecraft Bot 插件 - MC/群聊上下文互通 + LLM工具控制Bot",
-    "0.2.0",
+    "1.2.0",
     "",
 )
 class MineBuddyPlugin(Star):

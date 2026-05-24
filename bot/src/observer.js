@@ -116,6 +116,7 @@ export class Observer {
       timestamp: Date.now(),
       position: this.bot.getPosition(),
       health: this.bot.getHealth(),
+      combat: this.bot.getCombatStatus(),
       nearbyEntities,
       hostileEntities,
       players,

@@ -44,6 +44,7 @@
 除改名与文档整理外，当前版本还做了一轮实用优化：
 
 - 改善了近战攻击逻辑，不再只是“挥一下就结束”
+- 接入了 `mineflayer-pvp` 作为优先近战执行后端，保留手写近战逻辑作为回退
 - 改善了敌对生物感知与受击感知
 - 观察数据里补充了 hostile、food、lastDamageSource 等更适合 Agent 决策的字段
 - 修复了内置 `打怪` 技能在脚本沙箱中的一个隐藏问题
@@ -65,8 +66,8 @@ astrbot_plugin_minebuddy/
 
 说明：
 
-- 你当前本地目录如果还叫 `astrbot_plugin_llmmc`，只是工作目录名还没改，不影响插件内部标识已经切到 `MineBuddy`。
-- 等你 fork 并正式建仓后，建议把仓库目录名也改成 `astrbot_plugin_minebuddy`，这样内外会完全一致。
+- 当前本地目录、插件标识和仓库目标名已经统一为 `astrbot_plugin_minebuddy`。
+- 如果你后续还有其他部署副本，建议也统一使用这个目录名，避免和旧版 `astrbot_plugin_llmmc` 混淆。
 
 ## 安装
 
@@ -83,6 +84,11 @@ pip install httpx websockets
 cd astrbot_plugin_minebuddy/bot
 npm install
 ```
+
+说明：
+
+- 这一步是在运行 AstrBot 插件的那台机器上执行，不是在 Minecraft 服务器里执行。
+- `mineflayer-pvp` 属于 `bot/` 目录下的 Node.js 依赖，会跟随这一步一起安装。
 
 4. 在 AstrBot WebUI 中启用插件并填写配置。
 
@@ -193,4 +199,4 @@ aiocqhttp_default:GroupMessage:123456789
 
 - [`Whereis-Alice/astrbot_plugin_minebuddy`](https://github.com/Whereis-Alice/astrbot_plugin_minebuddy)
 
-建议后续把本地工作目录名也统一改成 `astrbot_plugin_minebuddy`，这样仓库名、插件标识和本地目录会完全一致。
+当前仓库名、插件标识和本地目录名都已经统一为 `astrbot_plugin_minebuddy`。

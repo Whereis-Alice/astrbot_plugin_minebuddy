@@ -53,6 +53,18 @@ if (config.viewer.enabled) {
   }
 }
 
+let mineflayerPvpPlugin = null;
+try {
+  const pvpModule = await import('mineflayer-pvp');
+  mineflayerPvpPlugin = pvpModule.plugin || pvpModule.default?.plugin || pvpModule.default || null;
+  if (mineflayerPvpPlugin) {
+    console.log('[Bot] mineflayer-pvp loaded successfully');
+  }
+} catch (err) {
+  console.warn('[Bot] Failed to load mineflayer-pvp:', err.message);
+  console.warn('[Bot] Run "npm install" in the bot directory to enable advanced melee combat');
+}
+
 /**
  * Minecraft Bot wrapper class
  * Handles connection and provides interface for actions
@@ -62,6 +74,7 @@ export class Bot {
     this.bot = null;
     this.isConnected = false;
     this.viewerStarted = false;
+    this.pvpEnabled = false;
   }
 
   /**
@@ -81,6 +94,10 @@ export class Bot {
 
       // Load pathfinder plugin
       this.bot.loadPlugin(pathfinder);
+      if (mineflayerPvpPlugin) {
+        this.bot.loadPlugin(mineflayerPvpPlugin);
+        this.pvpEnabled = true;
+      }
 
       this.bot.once('spawn', () => {
         console.log('[Bot] Successfully spawned in game!');
@@ -106,6 +123,12 @@ export class Bot {
         
         // 保存 movements 引用以便后续修改
         this.movements = movements;
+        if (this.hasPvpPlugin()) {
+          this.bot.pvp.followRange = 2;
+          this.bot.pvp.attackRange = 3.3;
+          this.bot.pvp.viewDistance = 48;
+          console.log('[Bot] PvP combat backend is active');
+        }
         
         // Start prismarine-viewer if enabled
         if (config.viewer.enabled && mineflayerViewer && !this.viewerStarted) {
@@ -289,13 +312,50 @@ export class Bot {
   }
 
   /**
+   * Whether mineflayer-pvp is active on the current bot instance.
+   * @returns {boolean}
+   */
+  hasPvpPlugin() {
+    return !!(this.bot?.pvp && typeof this.bot.pvp.attack === 'function');
+  }
+
+  /**
+   * Get current combat backend and target information.
+   * @returns {{pvpEnabled: boolean, target: object|null}}
+   */
+  getCombatStatus() {
+    if (!this.bot) {
+      return { pvpEnabled: false, target: null };
+    }
+
+    const target = this.bot.pvp?.target;
+    if (!target || !this.bot.entity) {
+      return { pvpEnabled: this.hasPvpPlugin(), target: null };
+    }
+
+    return {
+      pvpEnabled: this.hasPvpPlugin(),
+      target: {
+        id: target.id,
+        name: target.name || target.username || target.displayName || 'unknown',
+        type: target.type,
+        distance: Math.round(this.bot.entity.position.distanceTo(target.position) * 10) / 10,
+      },
+    };
+  }
+
+  /**
    * Disconnect from server
    */
   disconnect() {
     if (this.bot) {
+      if (this.hasPvpPlugin() && typeof this.bot.pvp.forceStop === 'function') {
+        this.bot.pvp.forceStop();
+      }
       this.bot.quit();
       this.bot = null;
       this.isConnected = false;
+      this.pvpEnabled = false;
     }
   }
 }
