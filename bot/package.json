@@ -1,7 +1,7 @@
 {
   "name": "llm-mc-bot",
   "version": "0.1.0",
-  "description": "Mineflayer bot service for LLM-MC",
+  "description": "Mineflayer bot service for MineBuddy",
   "main": "src/index.js",
   "type": "module",
   "scripts": {

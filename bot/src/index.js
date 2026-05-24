@@ -5,7 +5,7 @@ import { BotServer } from './server.js';
  */
 async function main() {
   console.log('╔═══════════════════════════════════════╗');
-  console.log('║      LLM-MC Bot Service v0.1.0        ║');
+  console.log('║     MineBuddy Bot Service v0.2.0      ║');
   console.log('╚═══════════════════════════════════════╝');
   console.log('');
 

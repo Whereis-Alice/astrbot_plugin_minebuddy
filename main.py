@@ -1,7 +1,7 @@
 """
-AstrBot Plugin: LLM-MC
-将 LLM_MC 的 Minecraft Bot 控制能力集成到 AstrBot，
-实现 MC 聊天与 QQ 群上下文互通，LLM 通过工具调用控制 Bot。
+AstrBot Plugin: MineBuddy
+将 Minecraft Bot 控制能力集成到 AstrBot，
+实现 MC 聊天与群聊上下文互通，LLM 通过工具调用控制 Bot。
 """
 import asyncio
 import json
@@ -20,13 +20,13 @@ from .script_executor import ScriptExecutor
 
 
 @register(
-    "astrbot_plugin_llmmc",
-    "LLMMC",
-    "LLM-MC Minecraft Bot 插件 - MC/QQ上下文互通 + LLM工具控制Bot",
-    "0.1.0",
+    "astrbot_plugin_minebuddy",
+    "MineBuddy",
+    "MineBuddy Minecraft Bot 插件 - MC/群聊上下文互通 + LLM工具控制Bot",
+    "0.2.0",
     "",
 )
-class LLMMCPlugin(Star):
+class MineBuddyPlugin(Star):
     def __init__(self, context: Context, config: dict):
         super().__init__(context)
         self.config = config
@@ -81,6 +81,7 @@ class LLMMCPlugin(Star):
         self._agent_task: Optional[asyncio.Task] = None
         self._last_health_alert = 0
         self._last_food_alert = 0
+        self._last_threat_alert = 0
 
     
     async def initialize(self):
@@ -95,8 +96,9 @@ class LLMMCPlugin(Star):
         
         # 初始化管理器
         from astrbot.core.star.star_tools import StarTools
-        data_dir = StarTools.get_data_dir("astrbot_plugin_llmmc")
+        data_dir = StarTools.get_data_dir("astrbot_plugin_minebuddy")
         skills_data_dir = f"{data_dir}/skills"
+        self._migrate_legacy_data_dir(skills_data_dir)
         
         # 首次运行时，将插件自带的技能复制到数据目录
         self._migrate_bundled_skills(skills_data_dir)
@@ -115,9 +117,9 @@ class LLMMCPlugin(Star):
         # 启动 Agent Loop（如果启用）
         if self.enable_agent_loop:
             self._agent_task = asyncio.create_task(self._agent_loop())
-            logger.info("[LLMMC] Agent Loop 已启动")
+            logger.info("[MineBuddy] Agent Loop 已启动")
         
-        logger.info(f"[LLMMC] 插件已初始化 | Bot: {self.bot_http_url} | 群绑定: {self.session_id or '未配置'}")
+        logger.info(f"[MineBuddy] 插件已初始化 | Bot: {self.bot_http_url} | 群绑定: {self.session_id or '未配置'}")
     
     async def terminate(self):
         """插件关闭"""
@@ -133,7 +135,7 @@ class LLMMCPlugin(Star):
             await self.bot_client.close()
         # 停止 Bot 子进程
         await self._stop_bot_service()
-        logger.info("[LLMMC] 插件已关闭")
+        logger.info("[MineBuddy] 插件已关闭")
     
     async def _start_bot_service(self):
         """启动 Node.js Bot 服务子进程"""
@@ -151,8 +153,8 @@ class LLMMCPlugin(Star):
         
         server_js = bot_path / "src" / "index.js"
         if not server_js.exists():
-            logger.error(f"[LLMMC] Bot 入口文件不存在: {server_js}")
-            logger.error(f"[LLMMC] 请在配置中设置正确的 bot_dir，或将 LLM_MC/bot 目录放在插件同级")
+            logger.error(f"[MineBuddy] Bot 入口文件不存在: {server_js}")
+            logger.error(f"[MineBuddy] 请在配置中设置正确的 bot_dir，或将 Bot 目录放在插件同级")
             return
         
         # 构造环境变量，传入 MC 配置
@@ -176,15 +178,15 @@ class LLMMCPlugin(Star):
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.STDOUT,
             )
-            logger.info(f"[LLMMC] Bot 服务已启动 (PID: {self._bot_process.pid}) | MC: {self.mc_host}:{self.mc_port} | 端口: {self.bot_service_port}")
+            logger.info(f"[MineBuddy] Bot 服务已启动 (PID: {self._bot_process.pid}) | MC: {self.mc_host}:{self.mc_port} | 端口: {self.bot_service_port}")
             
             # 等待服务就绪
             await asyncio.sleep(3)
             
         except FileNotFoundError:
-            logger.error("[LLMMC] 未找到 node 命令，请确保 Node.js 已安装并在 PATH 中")
+            logger.error("[MineBuddy] 未找到 node 命令，请确保 Node.js 已安装并在 PATH 中")
         except Exception as e:
-            logger.error(f"[LLMMC] 启动 Bot 服务失败: {e}")
+            logger.error(f"[MineBuddy] 启动 Bot 服务失败: {e}")
     
     async def _stop_bot_service(self):
         """停止 Bot 服务子进程"""
@@ -195,9 +197,9 @@ class LLMMCPlugin(Star):
                     self._bot_process.wait(timeout=5)
                 except Exception:
                     self._bot_process.kill()
-                logger.info(f"[LLMMC] Bot 服务已停止 (PID: {self._bot_process.pid})")
+                logger.info(f"[MineBuddy] Bot 服务已停止 (PID: {self._bot_process.pid})")
             except Exception as e:
-                logger.warning(f"[LLMMC] 停止 Bot 服务时出错: {e}")
+                logger.warning(f"[MineBuddy] 停止 Bot 服务时出错: {e}")
             self._bot_process = None
     
     def _migrate_bundled_skills(self, target_dir: str):
@@ -225,7 +227,34 @@ class LLMMCPlugin(Star):
                 count += 1
         
         if count > 0:
-            logger.info(f"[LLMMC] 已迁移 {count} 个内置技能到 {target_dir}")
+            logger.info(f"[MineBuddy] 已迁移 {count} 个内置技能到 {target_dir}")
+
+    def _migrate_legacy_data_dir(self, target_dir: str):
+        """将旧插件数据目录中的技能迁移到新的插件目录，避免改名后丢失数据。"""
+        import shutil
+        from pathlib import Path
+        from astrbot.core.star.star_tools import StarTools
+
+        target_path = Path(target_dir)
+        legacy_root = Path(StarTools.get_data_dir("astrbot_plugin_llmmc"))
+        legacy_skills_dir = legacy_root / "skills"
+
+        if not legacy_skills_dir.exists():
+            return
+
+        target_path.mkdir(parents=True, exist_ok=True)
+        moved = 0
+        for file_path in legacy_skills_dir.iterdir():
+            if not file_path.is_file():
+                continue
+            target_file = target_path / file_path.name
+            if target_file.exists():
+                continue
+            shutil.copy2(file_path, target_file)
+            moved += 1
+
+        if moved > 0:
+            logger.info(f"[MineBuddy] 已从旧目录迁移 {moved} 个技能文件到 {target_dir}")
     
     # ============================================================
     # 事件桥接
@@ -234,7 +263,7 @@ class LLMMCPlugin(Star):
     async def _push_event(self, message: str, sender_name: str = None, wake_llm: bool = False):
         """推送 MC 事件到 AstrBot（平台无关）"""
         if not self.session_id:
-            logger.warning("[LLMMC] 未配置 unified_group_umo，无法推送事件")
+            logger.warning("[MineBuddy] 未配置 unified_group_umo，无法推送事件")
             return
         
         from astrbot.core.star.star_tools import StarTools
@@ -245,13 +274,13 @@ class LLMMCPlugin(Star):
         )
         abm = await StarTools.create_message(
             type="GroupMessage",
-            self_id="astrbot_llmmc",
+            self_id="astrbot_minebuddy",
             session_id=self.session_id,
             sender=sender,
             message=[Plain(message)],
             message_str=message,
             group_id=self.group_id,
-            raw_message={"_llmmc_wake_llm": wake_llm},
+            raw_message={"_minebuddy_wake_llm": wake_llm},
         )
         await StarTools.create_event(abm=abm, platform="aiocqhttp", is_wake=wake_llm)
     
@@ -292,14 +321,14 @@ class LLMMCPlugin(Star):
         await self._push_event(msg, wake_llm=True)
     
     # ============================================================
-    # 消息监听器 — 检测 LLMMC 标记并设置唤醒
+    # 消息监听器 — 检测 MineBuddy 标记并设置唤醒
     # ============================================================
     
     @filter.event_message_type(filter.EventMessageType.ALL)
     async def on_message(self, event: AstrMessageEvent):
-        """检测 LLMMC 事件标记，设置强制唤醒 LLM"""
+        """检测 MineBuddy 事件标记，设置强制唤醒 LLM"""
         raw = getattr(event.message_obj, 'raw_message', None)
-        if isinstance(raw, dict) and raw.get('_llmmc_wake_llm'):
+        if isinstance(raw, dict) and (raw.get('_minebuddy_wake_llm') or raw.get('_llmmc_wake_llm')):
             event.is_at_or_wake_command = True
     
     # ============================================================
@@ -336,7 +365,7 @@ class LLMMCPlugin(Star):
                     try:
                         await self.bot_client.execute_action("chat", {"message": chunk})
                     except Exception as e:
-                        logger.error(f"[LLMMC] 发送 MC 消息失败: {e}")
+                        logger.error(f"[MineBuddy] 发送 MC 消息失败: {e}")
         
         # 清空消息链，阻止发送到 QQ 群（MC 消息只回复到 MC）
         result.chain = []
@@ -349,6 +378,7 @@ class LLMMCPlugin(Star):
         """简化版 Agent 循环：仅做环境感知和紧急推送"""
         import time
         ALERT_COOLDOWN = 30  # 同类告警冷却时间（秒）
+        THREAT_COOLDOWN = 12
         
         while True:
             try:
@@ -363,6 +393,9 @@ class LLMMCPlugin(Star):
                 health_data = obs.get("health", {})
                 health = health_data.get("health", 20)
                 food = health_data.get("food", 20)
+                hostile_entities = obs.get("hostileEntities", [])
+                close_threats = [e for e in hostile_entities if e.get("distance", 999) <= 5]
+                last_damage_source = obs.get("lastDamageSource")
                 
                 # 生命值警报
                 if health < self.health_threshold and (now - self._last_health_alert) > ALERT_COOLDOWN:
@@ -375,11 +408,19 @@ class LLMMCPlugin(Star):
                     msg = self._format_urgent_message("饥饿值过低", obs)
                     await self._push_event(msg, wake_llm=True)
                     self._last_food_alert = now
+                elif close_threats and (now - self._last_threat_alert) > THREAT_COOLDOWN:
+                    msg = self._format_urgent_message("附近有敌对生物在追击", obs)
+                    await self._push_event(msg, wake_llm=True)
+                    self._last_threat_alert = now
+                elif last_damage_source and (now - self._last_threat_alert) > THREAT_COOLDOWN:
+                    msg = self._format_urgent_message("刚刚受到攻击", obs)
+                    await self._push_event(msg, wake_llm=True)
+                    self._last_threat_alert = now
                     
             except asyncio.CancelledError:
                 return
             except Exception as e:
-                logger.error(f"[LLMMC] Agent tick error: {e}")
+                logger.error(f"[MineBuddy] Agent tick error: {e}")
                 await asyncio.sleep(10)
     
     def _format_urgent_message(self, reason: str, obs: Dict[str, Any]) -> str:
@@ -392,10 +433,14 @@ class LLMMCPlugin(Star):
         parts.append(f"位置:({pos.get('x', '?'):.0f},{pos.get('y', '?'):.0f},{pos.get('z', '?'):.0f})")
         
         # 附近实体
-        entities = obs.get("nearbyEntities", [])
+        entities = obs.get("hostileEntities") or obs.get("nearbyEntities", [])
         if entities:
             entity_strs = [f"{e.get('name','?')}({e.get('distance', '?'):.0f}格)" for e in entities[:5]]
             parts.append(f"附近: {', '.join(entity_strs)}")
+
+        damage_source = obs.get("lastDamageSource") or {}
+        if damage_source:
+            parts.append(f"最近攻击来源: {damage_source.get('name', '?')} ({damage_source.get('distance', '?')}格)")
         
         # 食物
         inventory = obs.get("inventory", [])
@@ -823,7 +868,7 @@ class LLMMCPlugin(Star):
     
     @filter.command("mc_status")
     async def cmd_status(self, event: AstrMessageEvent):
-        """查看 LLMMC 插件状态"""
+        """查看 MineBuddy 插件状态"""
         try:
             bot_status = await self.bot_client.get_status()
             connected = bot_status.get("connected", False)
@@ -834,7 +879,7 @@ class LLMMCPlugin(Star):
         skills_count = len(self.skill_manager.list_skills()) if self.skill_manager else 0
         
         lines = [
-            f"🤖 LLMMC 插件状态",
+            f"🤖 MineBuddy 插件状态",
             f"Bot 连接: {'✅ 已连接' if connected else '❌ 未连接'}",
             f"Bot 服务: {self.bot_http_url}",
             f"绑定群: {self.session_id or '未配置'}",

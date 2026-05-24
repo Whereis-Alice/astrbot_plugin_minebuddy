@@ -1,161 +1,196 @@
-# astrbot_plugin_llmmc
+# MineBuddy
 
-将 [LLM-MC](https://github.com/example/LLM_MC) 的 Minecraft Bot 控制能力集成到 AstrBot，实现 **MC 聊天与 QQ 群上下文互通**，LLM 通过工具调用直接控制 Minecraft Bot。
+`MineBuddy` 是一个基于 AstrBot 的 Minecraft Bot 插件。它把 Mineflayer Bot 的控制能力接进 AstrBot，让 LLM 可以通过工具调用在 Minecraft 里移动、战斗、采集、合成、观察环境，并把 MC 聊天与群聊上下文串起来。
 
-## ✨ 功能
+这不是原作者仓库的原样镜像，而是一个准备长期维护的改版分支。为了避免后续和上游插件在 AstrBot 插件市场、插件目录名、数据目录、升级来源上发生冲突，本仓库已经使用独立插件标识：
 
-- 🔗 **MC ↔ QQ 双向消息桥接** — MC 聊天自动转发到绑定的 QQ 群，QQ 群回复自动发送到 MC
-- 🧠 **统一上下文** — MC 和 QQ 群共享同一个 LLM 对话历史，对话无缝衔接
-- 🛠️ **30+ LLM 工具** — 移动、挖矿、合成、战斗、查看背包等，LLM 可直接控制 Bot
-- 📜 **脚本执行** — LLM 可编写并执行 Python 脚本完成复杂任务
-- 💾 **技能管理** — 保存/复用常用操作为技能，支持后台运行（内置 7 个预制技能）
-- 🚨 **Agent Loop** — 可选的自主感知循环，生命值/饥饿值过低时主动唤醒 LLM 决策
-- 🚀 **一键启动** — 插件自动拉起 Node.js Bot 服务，无需手动启动
+- 插件 ID：`astrbot_plugin_minebuddy`
+- 展示名：`MineBuddy`
 
-## 📐 架构
+## 原仓库说明
 
-```
-astrbot_plugin_llmmc/          ← 整个插件自包含
-├── bot/                       ← Node.js Mineflayer Bot 服务
-│   ├── src/server.js
-│   ├── package.json
-│   └── ...
-├── skills/                    ← 内置技能（挖矿、打怪、合成等）
-├── main.py                    ← 插件入口
-├── bot_client.py              ← HTTP/WS 客户端
-├── script_executor.py         ← BotAPI + 沙盒脚本执行
-├── skill_manager.py           ← 技能持久化
-├── task_manager.py            ← 后台任务管理
+本项目基于原作者仓库修改而来：
+
+- 原仓库：[`advent259141/astrbot_plugin_llmmc`](https://github.com/advent259141/astrbot_plugin_llmmc)
+
+如果你在阅读历史资料、旧截图、旧配置或旧讨论时看到 `astrbot_plugin_llmmc`、`LLMMC`、`LLM-MC`，那指的就是这个项目的上游版本。
+
+## 为什么要改名
+
+改名的目的很直接：
+
+- 避免和原插件使用同一个 AstrBot 插件标识，导致更新来源混淆。
+- 避免和上游版本共享同一个数据目录，减少技能文件、缓存文件互相覆盖的风险。
+- 方便后续把这个仓库 fork 成你们自己的维护版本，形成清晰的版本边界。
+
+当前代码里已经做了这些处理：
+
+- AstrBot 插件注册名从 `astrbot_plugin_llmmc` 改为 `astrbot_plugin_minebuddy`
+- 内部事件唤醒标记切换到 `"_minebuddy_wake_llm"`
+- 插件数据目录切换到 `astrbot_plugin_minebuddy`
+- 保留了旧技能目录迁移逻辑，首次运行时会尝试从旧版 `astrbot_plugin_llmmc` 数据目录复制技能文件
+
+## 当前版本特性
+
+- MC 聊天与群聊上下文互通
+- 30+ 个 LLM 工具，可直接控制 Minecraft Bot
+- 支持脚本执行与技能持久化
+- 内置采矿、战斗、钓鱼、采集木头、拾取物品等技能
+- 可选 Agent Loop，在低血量、低饥饿、附近有敌对生物或刚受击时主动唤醒 LLM
+- 插件启动时可自动拉起 Node.js Bot 服务
+
+## 相比上游的当前改动
+
+除改名与文档整理外，当前版本还做了一轮实用优化：
+
+- 改善了近战攻击逻辑，不再只是“挥一下就结束”
+- 改善了敌对生物感知与受击感知
+- 观察数据里补充了 hostile、food、lastDamageSource 等更适合 Agent 决策的字段
+- 修复了内置 `打怪` 技能在脚本沙箱中的一个隐藏问题
+
+## 目录结构
+
+```text
+astrbot_plugin_minebuddy/
+├── bot/                  # Node.js Mineflayer Bot 服务
+├── skills/               # 内置技能
+├── main.py               # AstrBot 插件入口
+├── bot_client.py         # Bot HTTP/WS 客户端
+├── script_executor.py    # 脚本执行器
+├── skill_manager.py      # 技能管理
+├── task_manager.py       # 后台任务管理
 ├── metadata.yaml
 └── _conf_schema.json
 ```
 
-```
-插件启动 → 自动拉起 node bot/src/server.js → 连接 MC 服务器
-           ↕ HTTP/WS
-       AstrBot LLM ←→ QQ 群 / MC 聊天（共享上下文）
-```
+说明：
 
-## 🚀 快速开始
+- 你当前本地目录如果还叫 `astrbot_plugin_llmmc`，只是工作目录名还没改，不影响插件内部标识已经切到 `MineBuddy`。
+- 等你 fork 并正式建仓后，建议把仓库目录名也改成 `astrbot_plugin_minebuddy`，这样内外会完全一致。
 
-### 前置要求
+## 安装
 
-- AstrBot 已安装并运行
-- Node.js 已安装（用于 Mineflayer Bot）
-- Python 依赖：`httpx`, `websockets`
-
-### 安装
-
-1. 将 `astrbot_plugin_llmmc/` 目录放入 AstrBot 的插件目录
+1. 将插件目录放入 AstrBot 插件目录。
 2. 安装 Python 依赖：
-   ```bash
-   pip install httpx websockets
-   ```
-3. 安装 Bot 依赖（仅首次）：
-   ```bash
-   cd astrbot_plugin_llmmc/bot && npm install
-   ```
-4. 在 AstrBot WebUI 中启用插件并配置
 
-> **完成！** 插件启动时会自动拉起 Bot 服务，无需手动启动 Node.js。
+```bash
+pip install httpx websockets
+```
 
-### 配置
+3. 安装 Bot 依赖：
 
-#### Bot 服务 & MC 服务器
+```bash
+cd astrbot_plugin_minebuddy/bot
+npm install
+```
+
+4. 在 AstrBot WebUI 中启用插件并填写配置。
+
+## 主要配置项
+
+### Bot 服务与 MC 连接
 
 | 配置项 | 说明 | 默认值 |
-|--------|------|--------|
+| --- | --- | --- |
 | `auto_start_bot` | 自动启动 Bot 服务 | `true` |
-| `bot_dir` | Bot 目录（留空用插件内置的） | `""` |
-| `mc_host` | MC 服务器地址 | `localhost` |
-| `mc_port` | MC 服务器端口 | `25565` |
+| `bot_dir` | 外部 Bot 目录，留空则使用插件内置 `bot/` | `""` |
+| `mc_host` | Minecraft 服务器地址 | `localhost` |
+| `mc_port` | Minecraft 服务器端口 | `25565` |
 | `mc_username` | Bot 用户名 | `LLM_Bot` |
-| `mc_version` | MC 版本 | `1.20.1` |
-| `bot_service_port` | Bot HTTP/WS 端口 | `3001` |
+| `mc_version` | Minecraft 版本 | `1.20.1` |
+| `bot_service_port` | Bot HTTP/WS 服务端口 | `3001` |
 | `auto_connect` | 启动后自动连接 MC | `false` |
-| `viewer_enabled` | 启用 prismarine-viewer | `false` |
+| `viewer_enabled` | 是否启用 prismarine-viewer | `false` |
 | `viewer_port` | Viewer 端口 | `3007` |
 
-#### AstrBot 集成
+### AstrBot 集成
 
 | 配置项 | 说明 | 默认值 |
-|--------|------|--------|
-| `unified_group_umo` | 绑定 QQ 群 UMO | `""` |
-| `bot_nickname` | MC 中的机器人名称 | `小面包` |
-| `enable_chat_response` | LLM 回复发到 MC 聊天 | `true` |
-| `enable_agent_loop` | 启用自主环境感知循环 | `false` |
-| `agent_tick_rate` | Agent 循环间隔（秒） | `5` |
-| `health_threshold` | 生命值警报阈值 | `6` |
-| `food_threshold` | 饥饿值警报阈值 | `4` |
+| --- | --- | --- |
+| `unified_group_umo` | 绑定群聊 UMO | `""` |
+| `bot_nickname` | 机器人在 MC 中展示的昵称 | 插件默认值 |
+| `enable_chat_response` | 是否把 LLM 回复发回 MC | `true` |
+| `enable_agent_loop` | 是否启用环境感知循环 | `false` |
+| `agent_tick_rate` | Agent Loop 间隔，单位秒 | `5` |
+| `health_threshold` | 低血量告警阈值 | `6` |
+| `food_threshold` | 低饥饿告警阈值 | `4` |
 
-**UMO 格式：** `aiocqhttp_default:GroupMessage:123456789`
+UMO 示例：
 
-## 🛠️ LLM 工具列表
-
-<details>
-<summary>基础动作（13个）</summary>
-
-`mc_chat` · `mc_goto` · `mc_follow_player` · `mc_stop_moving` · `mc_jump` · `mc_look_at` · `mc_attack` · `mc_collect_block` · `mc_place_block` · `mc_eat` · `mc_use_item` · `mc_activate_block` · `mc_wait`
-</details>
-
-<details>
-<summary>物品栏与合成（6个）</summary>
-
-`mc_view_inventory` · `mc_equip_item` · `mc_drop_item` · `mc_craft` · `mc_list_recipes` · `mc_smelt`
-</details>
-
-<details>
-<summary>环境感知（4个）</summary>
-
-`mc_get_observation` · `mc_find_block` · `mc_scan_entities` · `mc_list_players`
-</details>
-
-<details>
-<summary>容器与实体交互（7个）</summary>
-
-`mc_open_container` · `mc_close_container` · `mc_deposit_item` · `mc_withdraw_item` · `mc_mount_entity` · `mc_dismount` · `mc_use_on_entity`
-</details>
-
-<details>
-<summary>高级功能（10个）</summary>
-
-`mc_execute_script` · `mc_start_skill` · `mc_save_skill` · `mc_list_skills` · `mc_delete_skill` · `mc_get_task_status` · `mc_cancel_task` · `mc_bot_status` · `mc_connect` · `mc_disconnect`
-</details>
-
-## 📦 内置技能
-
-| 技能 | 说明 |
-|------|------|
-| ⛏️ 挖矿 | 自动寻矿并挖掘 |
-| 🔨 合成 | 智能合成物品 |
-| ⚔️ 打怪 | 战斗逻辑 |
-| 🎣 钓鱼 | 自动钓鱼 |
-| 🪵 采集木头 | 伐木收集 |
-| 🎁 丢给玩家 | 将物品丢给指定玩家 |
-| 📦 拾取物品 | 自动拾取附近物品 |
-
-## 📝 管理命令
-
-| 命令 | 说明 |
-|------|------|
-| `/mc_status` | 查看插件状态、Bot 连接、任务信息 |
-
-## 🔧 工作原理
-
-### 消息流向
-
-```
-MC 玩家聊天 ──WS──→ 插件 ──create_event──→ AstrBot LLM ──回复──→ 插件 ──HTTP──→ MC 聊天
-QQ 群消息 ──────────────────────────────→ AstrBot LLM ──工具调用──→ 插件 ──HTTP──→ MC Bot
+```text
+aiocqhttp_default:GroupMessage:123456789
 ```
 
-### LLM 唤醒机制
+## 常用工具
 
-- **MC 普通聊天**：`create_event(is_wake=False)`，由 AstrBot 唤醒词规则决定
-- **紧急事件**（Agent Loop）：通过 `raw_message._llmmc_wake_llm` 标记 + `EventMessageType.ALL` handler 设置 `event.is_at_or_wake_command = True`，强制触发 LLM
+基础动作：
 
-### 环境上下文
+- `mc_chat`
+- `mc_goto`
+- `mc_follow_player`
+- `mc_stop_moving`
+- `mc_jump`
+- `mc_look_at`
+- `mc_attack`
+- `mc_collect_block`
+- `mc_place_block`
+- `mc_eat`
+- `mc_use_item`
+- `mc_activate_block`
+- `mc_wait`
 
-- 不自动注入 system prompt（保护 API 缓存）
-- LLM 按需调用 `mc_get_observation` 获取环境信息
-- Agent Loop 仅在紧急情况时主动推送环境快照
+环境感知：
+
+- `mc_get_observation`
+- `mc_find_block`
+- `mc_scan_entities`
+- `mc_list_players`
+
+背包与合成：
+
+- `mc_view_inventory`
+- `mc_equip_item`
+- `mc_drop_item`
+- `mc_craft`
+- `mc_list_recipes`
+- `mc_smelt`
+
+高级功能：
+
+- `mc_execute_script`
+- `mc_start_skill`
+- `mc_save_skill`
+- `mc_list_skills`
+- `mc_delete_skill`
+- `mc_get_task_status`
+- `mc_cancel_task`
+- `mc_bot_status`
+- `mc_connect`
+- `mc_disconnect`
+
+## 内置技能
+
+- `挖矿`
+- `合成`
+- `打怪`
+- `钓鱼`
+- `采集木头`
+- `丢给玩家`
+- `拾取物品`
+
+## 迁移建议
+
+如果你之前已经在用上游 `astrbot_plugin_llmmc`，建议这样迁移：
+
+1. 先备份旧插件目录和数据目录。
+2. 使用本改版替换或并行放置。
+3. 首次启动后确认内置技能和你之前保存的技能是否已迁移成功。
+4. 确认 AstrBot 中启用的是 `astrbot_plugin_minebuddy`，而不是旧插件。
+
+## 当前仓库
+
+当前维护仓库：
+
+- [`Whereis-Alice/astrbot_plugin_minebuddy`](https://github.com/Whereis-Alice/astrbot_plugin_minebuddy)
+
+建议后续把本地工作目录名也统一改成 `astrbot_plugin_minebuddy`，这样仓库名、插件标识和本地目录会完全一致。

@@ -115,27 +115,27 @@ class BotClient:
         try:
             import websockets
         except ImportError:
-            logger.error("[LLMMC] websockets 库未安装，无法监听 Bot 事件。请安装: pip install websockets")
+            logger.error("[MineBuddy] websockets 库未安装，无法监听 Bot 事件。请安装: pip install websockets")
             return
         
         while True:
             try:
                 async with websockets.connect(self.ws_url) as ws:
                     self.ws_connection = ws
-                    logger.info(f"[LLMMC] WebSocket 已连接到 {self.ws_url}")
+                    logger.info(f"[MineBuddy] WebSocket 已连接到 {self.ws_url}")
                     
                     async for message in ws:
                         try:
                             event = json.loads(message)
                             await self._handle_event(event)
                         except json.JSONDecodeError:
-                            logger.warning(f"[LLMMC] Invalid JSON from WS: {message[:100]}")
+                            logger.warning(f"[MineBuddy] Invalid JSON from WS: {message[:100]}")
                             
             except asyncio.CancelledError:
-                logger.info("[LLMMC] WebSocket listener cancelled")
+                logger.info("[MineBuddy] WebSocket listener cancelled")
                 return
             except Exception as e:
-                logger.warning(f"[LLMMC] WebSocket 断开: {e}, 5秒后重连...")
+                logger.warning(f"[MineBuddy] WebSocket 断开: {e}, 5秒后重连...")
                 await asyncio.sleep(5)
     
     async def _handle_event(self, event: Dict[str, Any]):
@@ -149,7 +149,7 @@ class BotClient:
                 else:
                     handler(event)
             except Exception as e:
-                logger.error(f"[LLMMC] Event handler error: {e}")
+                logger.error(f"[MineBuddy] Event handler error: {e}")
     
     async def _check_event_waiters(self, event: Dict[str, Any]):
         """检查并触发匹配的事件等待器"""

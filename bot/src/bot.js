@@ -4,6 +4,42 @@ const { pathfinder, Movements } = pathfinderPkg;
 import minecraftData from 'minecraft-data';
 import { config } from './config.js';
 
+const HOSTILE_ENTITY_NAMES = new Set([
+  'blaze',
+  'bogged',
+  'cave_spider',
+  'creeper',
+  'drowned',
+  'elder_guardian',
+  'enderman',
+  'endermite',
+  'evoker',
+  'ghast',
+  'guardian',
+  'hoglin',
+  'husk',
+  'magma_cube',
+  'phantom',
+  'piglin_brute',
+  'pillager',
+  'ravager',
+  'shulker',
+  'silverfish',
+  'skeleton',
+  'slime',
+  'spider',
+  'stray',
+  'vex',
+  'vindicator',
+  'warden',
+  'witch',
+  'wither_skeleton',
+  'zoglin',
+  'zombie',
+  'zombie_villager',
+  'zombified_piglin',
+]);
+
 // Conditionally import prismarine-viewer
 let mineflayerViewer = null;
 if (config.viewer.enabled) {
@@ -162,7 +198,11 @@ export class Bot {
         entities.push({
           type: entity.type,
           name: entity.name || entity.username || entity.displayName || 'unknown',
+          displayName: entity.displayName || entity.username || entity.name || 'unknown',
           distance: Math.round(distance * 10) / 10,
+          health: entity.health || null,
+          isHostile: this.isHostileEntity(entity),
+          isPlayer: entity.type === 'player',
           position: {
             x: Math.floor(entity.position.x),
             y: Math.floor(entity.position.y),
@@ -182,9 +222,62 @@ export class Bot {
     if (!this.bot) return [];
     return this.bot.inventory.items().map(item => ({
       name: item.name,
+      displayName: item.displayName,
       count: item.count,
       slot: item.slot,
+      isFood: this._isFoodItem(item),
     }));
+  }
+
+  /**
+   * Check whether an inventory item can be eaten.
+   * @param {object} item
+   * @returns {boolean}
+   */
+  _isFoodItem(item) {
+    if (!item) return false;
+    if (item.foodPoints > 0 || item.saturation > 0) {
+      return true;
+    }
+    if (item.consumable === true) {
+      return true;
+    }
+    const name = item.name || '';
+    return [
+      'apple',
+      'beef',
+      'bread',
+      'carrot',
+      'chicken',
+      'cod',
+      'golden_apple',
+      'mutton',
+      'porkchop',
+      'potato',
+      'rabbit',
+      'salmon',
+      'stew',
+      'suspicious_stew',
+    ].some(keyword => name.includes(keyword));
+  }
+
+  /**
+   * Get hostile entity names known to the bot.
+   * @returns {string[]}
+   */
+  getHostileEntityNames() {
+    return [...HOSTILE_ENTITY_NAMES];
+  }
+
+  /**
+   * Determine whether an entity should be treated as hostile.
+   * @param {object} entity
+   * @returns {boolean}
+   */
+  isHostileEntity(entity) {
+    if (!entity) return false;
+    const name = (entity.name || '').toLowerCase();
+    return HOSTILE_ENTITY_NAMES.has(name);
   }
 
   /**

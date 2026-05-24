@@ -1,1 +1,1 @@
-# astrbot_plugin_llmmc
+# astrbot_plugin_minebuddy

@@ -3,6 +3,21 @@ const { goals } = pathfinderPkg;
 import Vec3 from 'vec3';
 import minecraftData from 'minecraft-data';
 
+const MELEE_WEAPON_PRIORITY = [
+  'netherite_sword',
+  'diamond_sword',
+  'iron_sword',
+  'stone_sword',
+  'wooden_sword',
+  'golden_sword',
+  'netherite_axe',
+  'diamond_axe',
+  'iron_axe',
+  'stone_axe',
+  'wooden_axe',
+  'golden_axe',
+];
+
 /**
  * Action system for the bot
  * Provides high-level actions that can be invoked via API
@@ -11,6 +26,65 @@ export class Actions {
   constructor(bot) {
     this.bot = bot;
     this.mcBot = bot.getMineflayerBot();
+  }
+
+  _normalizeName(value) {
+    return (value || '').toString().toLowerCase();
+  }
+
+  _matchesEntityType(entity, entityType) {
+    if (!entityType) return true;
+    const normalizedType = this._normalizeName(entityType);
+    const candidates = [
+      entity?.name,
+      entity?.mobType,
+      entity?.displayName,
+      entity?.username,
+      entity?.kind,
+      entity?.type,
+    ].map(value => this._normalizeName(value));
+    return candidates.some(value => value && (value === normalizedType || value.includes(normalizedType)));
+  }
+
+  _findNearestEntity(entityType, maxDistance = 32) {
+    const botPosition = this.mcBot.entity?.position;
+    if (!botPosition) return null;
+    let closest = null;
+    let closestDistance = Infinity;
+
+    for (const entity of Object.values(this.mcBot.entities)) {
+      if (!entity || entity === this.mcBot.entity || !entity.position) continue;
+      if (!this._matchesEntityType(entity, entityType)) continue;
+      const distance = botPosition.distanceTo(entity.position);
+      if (distance > maxDistance) continue;
+      if (distance < closestDistance) {
+        closest = entity;
+        closestDistance = distance;
+      }
+    }
+
+    return closest;
+  }
+
+  async _equipBestMeleeWeapon() {
+    const items = this.mcBot.inventory.items();
+    if (!items.length) {
+      return null;
+    }
+
+    const heldName = this._normalizeName(this.mcBot.heldItem?.name);
+    if (heldName && MELEE_WEAPON_PRIORITY.includes(heldName)) {
+      return this.mcBot.heldItem.name;
+    }
+
+    for (const weaponName of MELEE_WEAPON_PRIORITY) {
+      const item = items.find(candidate => candidate.name === weaponName);
+      if (!item) continue;
+      await this.mcBot.equip(item, 'hand');
+      return item.name;
+    }
+
+    return null;
   }
 
   /**
@@ -554,16 +628,85 @@ export class Actions {
    * Attack nearest entity of type
    */
   async attack(entityType) {
-    const entity = this.mcBot.nearestEntity((e) => {
-      return e.name === entityType || e.mobType === entityType;
-    });
+    const targetLabel = entityType || 'target';
+    let target = this._findNearestEntity(entityType, 32);
 
-    if (!entity) {
-      return { success: false, message: `No ${entityType} found nearby` };
+    if (!target) {
+      return { success: false, message: `No ${targetLabel} found nearby` };
     }
 
-    await this.mcBot.attack(entity);
-    return { success: true, message: `Attacked ${entityType}` };
+    let equippedWeapon = null;
+    try {
+      equippedWeapon = await this._equipBestMeleeWeapon();
+    } catch (error) {
+      console.warn(`[attack] Failed to equip melee weapon: ${error.message}`);
+    }
+
+    const maxAttackWindowMs = 9000;
+    const attackReach = 3.3;
+    const stopFollowDistance = 2;
+    const startTime = Date.now();
+    let swingCount = 0;
+
+    while (Date.now() - startTime < maxAttackWindowMs) {
+      if (!target || !this.mcBot.entities[target.id]) {
+        return {
+          success: swingCount > 0,
+          message: swingCount > 0 ? `Lost sight of ${targetLabel} after ${swingCount} hits` : `${targetLabel} disappeared before attack`,
+          hits: swingCount,
+          weapon: equippedWeapon,
+        };
+      }
+
+      target = this.mcBot.entities[target.id];
+      const distance = this.mcBot.entity.position.distanceTo(target.position);
+
+      if (distance > attackReach) {
+        this.mcBot.pathfinder.setGoal(new goals.GoalFollow(target, stopFollowDistance), true);
+        await new Promise(resolve => setTimeout(resolve, 250));
+        continue;
+      }
+
+      this.mcBot.pathfinder.setGoal(null);
+
+      try {
+        await this.mcBot.lookAt(target.position.offset(0, Math.min(target.height || 1.6, 1.6), 0), true);
+      } catch (error) {
+        console.warn(`[attack] lookAt failed: ${error.message}`);
+      }
+
+      await this.mcBot.attack(target);
+      swingCount += 1;
+
+      await new Promise(resolve => setTimeout(resolve, 600));
+
+      const refreshedTarget = this.mcBot.entities[target.id];
+      if (!refreshedTarget) {
+        return {
+          success: true,
+          message: `Defeated or lost ${targetLabel} after ${swingCount} hits`,
+          hits: swingCount,
+          weapon: equippedWeapon,
+        };
+      }
+
+      if (refreshedTarget.health !== undefined && refreshedTarget.health !== null && refreshedTarget.health <= 0) {
+        return {
+          success: true,
+          message: `Defeated ${targetLabel} in ${swingCount} hits`,
+          hits: swingCount,
+          weapon: equippedWeapon,
+        };
+      }
+    }
+
+    this.mcBot.pathfinder.setGoal(null);
+    return {
+      success: swingCount > 0,
+      message: swingCount > 0 ? `Stopped attacking ${targetLabel} after ${swingCount} hits` : `Could not get close enough to attack ${targetLabel}`,
+      hits: swingCount,
+      weapon: equippedWeapon,
+    };
   }
 
   /**
@@ -1257,7 +1400,7 @@ export class Actions {
       if (distance > maxRange) continue;
       
       // 如果指定了类型，进行过滤
-      if (entityType && entity.name !== entityType && entity.type !== entityType) {
+      if (entityType && !this._matchesEntityType(entity, entityType)) {
         continue;
       }
       
@@ -1276,7 +1419,7 @@ export class Actions {
         },
         distance: Math.round(distance * 10) / 10,
         health: entity.health || null,
-        isHostile: ['zombie', 'skeleton', 'creeper', 'spider', 'enderman', 'witch', 'phantom'].includes(entity.name),
+        isHostile: this.bot.isHostileEntity(entity),
         isPlayer: entity.type === 'player'
       });
     }

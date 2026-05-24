@@ -7,6 +7,7 @@ import traceback
 from typing import Dict, Any, Optional, List
 from io import StringIO
 import sys
+import random
 
 from astrbot.core import logger
 
@@ -311,6 +312,7 @@ _SAFE_BUILTINS = {
     'set': set, 'abs': abs, 'min': min, 'max': max, 'sum': sum, 'round': round,
     'sorted': sorted, 'enumerate': enumerate, 'zip': zip, 'map': map,
     'filter': filter, 'isinstance': isinstance, 'True': True, 'False': False, 'None': None,
+    'random': random,
 }
 
 
