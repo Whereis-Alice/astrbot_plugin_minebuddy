@@ -8,7 +8,7 @@
   "bot_dir": {
     "type": "string",
     "title": "Bot 服务目录",
-    "description": "Node.js Bot 项目路径（包含 src/server.js 的目录），留空则使用插件同级目录的 LLM_MC/bot",
+    "description": "Node.js Bot 项目路径，需包含 src/index.js；留空则使用插件内置 bot/ 目录",
     "default": ""
   },
   "mc_host": {
@@ -26,14 +26,20 @@
   "mc_username": {
     "type": "string",
     "title": "Bot 用户名",
-    "description": "Bot 在 MC 中的用户名",
+    "description": "Bot 在 MC 中使用的用户名",
     "default": "LLM_Bot"
   },
   "mc_version": {
     "type": "string",
     "title": "MC 版本",
-    "description": "Minecraft 版本号",
+    "description": "Minecraft 协议版本，例如 1.20.1、1.21.1",
     "default": "1.20.1"
+  },
+  "mc_connect_timeout_sec": {
+    "type": "int",
+    "title": "MC 连接超时（秒）",
+    "description": "等待 Bot 完成进服（spawn）的最长时间，超时后会尽快返回明确错误",
+    "default": 30
   },
   "bot_service_port": {
     "type": "int",
@@ -44,7 +50,7 @@
   "bot_http_url": {
     "type": "string",
     "title": "Bot Service HTTP 地址（手动模式）",
-    "description": "仅当关闭自动启动时使用。自动启动时会根据 bot_service_port 自动生成",
+    "description": "仅当关闭自动启动时使用；自动启动时会根据 bot_service_port 自动生成",
     "default": "http://localhost:3001"
   },
   "bot_ws_url": {
@@ -56,43 +62,43 @@
   "unified_group_umo": {
     "type": "string",
     "title": "绑定 QQ 群 UMO",
-    "description": "MC 聊天消息会注入到此 QQ 群的上下文中，实现对话互通。格式：平台ID:GroupMessage:群号，示例：aiocqhttp_default:GroupMessage:123456789",
+    "description": "MC 聊天消息会注入到该群上下文中，格式示例：aiocqhttp_default:GroupMessage:123456789",
     "default": ""
   },
   "bot_nickname": {
     "type": "string",
     "title": "机器人昵称",
-    "description": "MC 聊天中显示的机器人名称",
+    "description": "机器人在 MC 聊天中显示的昵称",
     "default": "小面包"
   },
   "enable_chat_response": {
     "type": "bool",
     "title": "启用聊天回复",
-    "description": "是否将 LLM 的回复发送到 MC 聊天框",
+    "description": "是否把 LLM 的回复发送回 MC 聊天",
     "default": true
   },
   "enable_agent_loop": {
     "type": "bool",
     "title": "启用 Agent 循环",
-    "description": "启用后 Bot 会定期检测环境状态，在紧急情况（低生命值、死亡等）时主动触发 LLM 决策",
+    "description": "定期检测环境状态，在低血量、饥饿或附近有敌对生物时主动唤醒 LLM",
     "default": false
   },
   "agent_tick_rate": {
     "type": "int",
     "title": "Agent 循环间隔（秒）",
-    "description": "Agent 循环的轮询间隔，单位秒",
+    "description": "Agent 循环轮询间隔，单位秒",
     "default": 5
   },
   "health_threshold": {
     "type": "int",
-    "title": "生命值警报阈值",
-    "description": "生命值低于此值时 Agent 会主动唤醒 LLM（满血 20）",
+    "title": "血量告警阈值",
+    "description": "生命值低于该阈值时主动唤醒 LLM（满血 20）",
     "default": 6
   },
   "food_threshold": {
     "type": "int",
-    "title": "饥饿值警报阈值",
-    "description": "饥饿值低于此值时 Agent 会主动唤醒 LLM（满饥饿 20）",
+    "title": "饥饿告警阈值",
+    "description": "饥饿值低于该阈值时主动唤醒 LLM（满饱食 20）",
     "default": 4
   },
   "auto_connect": {

@@ -40,7 +40,6 @@ const HOSTILE_ENTITY_NAMES = new Set([
   'zombified_piglin',
 ]);
 
-// Conditionally import prismarine-viewer
 let mineflayerViewer = null;
 if (config.viewer.enabled) {
   try {
@@ -65,16 +64,98 @@ try {
   console.warn('[Bot] Run "npm install" in the bot directory to enable advanced melee combat');
 }
 
-/**
- * Minecraft Bot wrapper class
- * Handles connection and provides interface for actions
- */
 export class Bot {
   constructor() {
     this.bot = null;
     this.isConnected = false;
     this.viewerStarted = false;
     this.pvpEnabled = false;
+    this.connectionState = 'idle';
+    this.lastConnectError = null;
+    this.lastDisconnectReason = null;
+    this.lastKickReason = null;
+    this.lastConnectStartedAt = null;
+    this.lastSpawnAt = null;
+    this.lifecycleHandlers = new Set();
+    this.movements = null;
+  }
+
+  addLifecycleHandler(handler) {
+    if (typeof handler === 'function') {
+      this.lifecycleHandlers.add(handler);
+    }
+  }
+
+  removeLifecycleHandler(handler) {
+    this.lifecycleHandlers.delete(handler);
+  }
+
+  _emitLifecycleEvent(type, payload = {}) {
+    const event = {
+      type,
+      timestamp: Date.now(),
+      ...payload,
+    };
+
+    for (const handler of this.lifecycleHandlers) {
+      try {
+        handler(event);
+      } catch (error) {
+        console.error('[Bot] Lifecycle handler error:', error);
+      }
+    }
+  }
+
+  _formatReason(reason) {
+    if (reason === undefined || reason === null) {
+      return 'unknown';
+    }
+
+    if (typeof reason === 'string') {
+      return reason;
+    }
+
+    if (typeof reason === 'object' && typeof reason.toString === 'function') {
+      const text = reason.toString();
+      if (text && text !== '[object Object]') {
+        return text;
+      }
+    }
+
+    try {
+      return JSON.stringify(reason);
+    } catch (error) {
+      return String(reason);
+    }
+  }
+
+  _formatErrorMessage(error) {
+    if (!error) {
+      return 'unknown error';
+    }
+    return error.message || this._formatReason(error);
+  }
+
+  _buildConnectionError(phase, message, extra = {}) {
+    const error = new Error(`[${phase}] ${message}`);
+    error.phase = phase;
+    error.details = extra;
+    return error;
+  }
+
+  _recordConnectError(phase, message, extra = {}) {
+    this.connectionState = 'failed';
+    this.lastConnectError = {
+      phase,
+      message,
+      ...extra,
+      at: new Date().toISOString(),
+    };
+    this._emitLifecycleEvent('connect_error', {
+      phase,
+      message,
+      ...extra,
+    });
   }
 
   /**
@@ -82,89 +163,218 @@ export class Bot {
    * @returns {Promise<void>}
    */
   async connect() {
+    if (this.bot) {
+      this.disconnect();
+    }
+
     return new Promise((resolve, reject) => {
-      console.log(`[Bot] Connecting to ${config.minecraft.host}:${config.minecraft.port}...`);
-      
-      this.bot = mineflayer.createBot({
-        host: config.minecraft.host,
-        port: config.minecraft.port,
-        username: config.minecraft.username,
-        version: config.minecraft.version,
-      });
+      const connectTimeoutMs = config.minecraft.connectTimeoutMs;
+      let botInstance = null;
+      let connectTimer = null;
+      let settled = false;
+      let spawned = false;
 
-      // Load pathfinder plugin
-      this.bot.loadPlugin(pathfinder);
-      if (mineflayerPvpPlugin) {
-        this.bot.loadPlugin(mineflayerPvpPlugin);
-        this.pvpEnabled = true;
-      }
-
-      this.bot.once('spawn', () => {
-        console.log('[Bot] Successfully spawned in game!');
-        this.isConnected = true;
-        
-        // Setup pathfinder with mining capabilities
-        const mcData = minecraftData(this.bot.version);
-        const movements = new Movements(this.bot, mcData);
-        
-        // 启用挖掘功能 - 允许 bot 挖掘方块来开辟路径
-        movements.canDig = true;
-        // 允许放置方块（用于搭桥等）
-        movements.allow1by1towers = true;
-        // 允许在水中移动
-        movements.canSwim = true;
-        // 设置最大挖掘时间（毫秒）- 避免挖太硬的方块
-        movements.maxDropDown = 4;
-        // 设置挖掘的方块类型（排除基岩等）
-        movements.blocksCantBreak.add(mcData.blocksByName['bedrock']?.id);
-        movements.blocksCantBreak.add(mcData.blocksByName['obsidian']?.id);
-        
-        this.bot.pathfinder.setMovements(movements);
-        
-        // 保存 movements 引用以便后续修改
-        this.movements = movements;
-        if (this.hasPvpPlugin()) {
-          this.bot.pvp.followRange = 2;
-          this.bot.pvp.attackRange = 3.3;
-          this.bot.pvp.viewDistance = 48;
-          console.log('[Bot] PvP combat backend is active');
+      const rejectConnect = (phase, message, extra = {}) => {
+        if (settled) {
+          return;
         }
-        
-        // Start prismarine-viewer if enabled
-        if (config.viewer.enabled && mineflayerViewer && !this.viewerStarted) {
+
+        settled = true;
+        if (connectTimer) {
+          clearTimeout(connectTimer);
+        }
+
+        this.isConnected = false;
+        this.pvpEnabled = false;
+        this.movements = null;
+        this.lastDisconnectReason = message;
+        this._recordConnectError(phase, message, extra);
+
+        if (botInstance) {
           try {
-            mineflayerViewer(this.bot, {
-              port: config.viewer.port,
-              firstPerson: config.viewer.firstPerson
-            });
-            this.viewerStarted = true;
-            console.log(`[Bot] Viewer started at http://localhost:${config.viewer.port}`);
-          } catch (err) {
-            console.error('[Bot] Failed to start viewer:', err.message);
+            botInstance.quit(message);
+          } catch (quitError) {
+            console.warn('[Bot] Failed to close bot after connect error:', this._formatErrorMessage(quitError));
           }
         }
-        
+
+        if (this.bot === botInstance) {
+          this.bot = null;
+        }
+
+        reject(this._buildConnectionError(phase, message, extra));
+      };
+
+      const resolveConnect = () => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        if (connectTimer) {
+          clearTimeout(connectTimer);
+        }
         resolve();
+      };
+
+      this.connectionState = 'connecting';
+      this.lastConnectStartedAt = new Date().toISOString();
+      this.lastSpawnAt = null;
+      this.lastConnectError = null;
+      this.lastDisconnectReason = null;
+      this.lastKickReason = null;
+      this.isConnected = false;
+      this.pvpEnabled = false;
+      this.movements = null;
+
+      console.log(
+        `[Bot] Connecting to ${config.minecraft.host}:${config.minecraft.port} as ${config.minecraft.username} `
+        + `(version: ${config.minecraft.version}, timeout: ${connectTimeoutMs}ms)`
+      );
+
+      try {
+        this.bot = mineflayer.createBot({
+          host: config.minecraft.host,
+          port: config.minecraft.port,
+          username: config.minecraft.username,
+          version: config.minecraft.version,
+        });
+        botInstance = this.bot;
+      } catch (error) {
+        rejectConnect('create_bot', this._formatErrorMessage(error));
+        return;
+      }
+
+      try {
+        botInstance.loadPlugin(pathfinder);
+        if (mineflayerPvpPlugin) {
+          botInstance.loadPlugin(mineflayerPvpPlugin);
+          this.pvpEnabled = true;
+        }
+      } catch (error) {
+        rejectConnect('plugin_load', this._formatErrorMessage(error));
+        return;
+      }
+
+      connectTimer = setTimeout(() => {
+        rejectConnect(
+          'timeout',
+          `连接超时：${Math.floor(connectTimeoutMs / 1000)} 秒内没有进入游戏。请检查 mc_host、mc_port、mc_version，或确认服务端是否把机器人踢掉了。`,
+          { timeoutMs: connectTimeoutMs }
+        );
+      }, connectTimeoutMs);
+
+      botInstance.once('spawn', () => {
+        console.log('[Bot] Successfully spawned in game!');
+        this.isConnected = true;
+        this.connectionState = 'connected';
+        this.lastSpawnAt = new Date().toISOString();
+        this.lastDisconnectReason = null;
+        this.lastKickReason = null;
+        this.lastConnectError = null;
+
+        try {
+          const mcData = minecraftData(botInstance.version);
+          const movements = new Movements(botInstance, mcData);
+
+          movements.canDig = true;
+          movements.allow1by1towers = true;
+          movements.canSwim = true;
+          movements.maxDropDown = 4;
+          movements.blocksCantBreak.add(mcData.blocksByName.bedrock?.id);
+          movements.blocksCantBreak.add(mcData.blocksByName.obsidian?.id);
+
+          botInstance.pathfinder.setMovements(movements);
+          this.movements = movements;
+
+          if (this.hasPvpPlugin()) {
+            botInstance.pvp.followRange = 2;
+            botInstance.pvp.attackRange = 3.3;
+            botInstance.pvp.viewDistance = 48;
+            console.log('[Bot] PvP combat backend is active');
+          }
+
+          if (config.viewer.enabled && mineflayerViewer && !this.viewerStarted) {
+            try {
+              mineflayerViewer(botInstance, {
+                port: config.viewer.port,
+                firstPerson: config.viewer.firstPerson,
+              });
+              this.viewerStarted = true;
+              console.log(`[Bot] Viewer started at http://localhost:${config.viewer.port}`);
+            } catch (error) {
+              console.error('[Bot] Failed to start viewer:', error.message);
+            }
+          }
+        } catch (error) {
+          rejectConnect('spawn_setup', this._formatErrorMessage(error));
+          return;
+        }
+
+        spawned = true;
+        this._emitLifecycleEvent('spawn');
+        resolveConnect();
       });
 
-      this.bot.on('error', (err) => {
-        console.error('[Bot] Error:', err);
-        reject(err);
+      botInstance.on('error', (error) => {
+        const message = this._formatErrorMessage(error);
+        console.error('[Bot] Error:', error);
+
+        if (!spawned) {
+          rejectConnect('error', message, { code: error?.code || null });
+          return;
+        }
+
+        this.lastConnectError = {
+          phase: 'runtime',
+          message,
+          code: error?.code || null,
+          at: new Date().toISOString(),
+        };
+        this._emitLifecycleEvent('bot_error', {
+          message,
+          code: error?.code || null,
+        });
       });
 
-      this.bot.on('end', () => {
-        console.log('[Bot] Disconnected from server');
+      botInstance.on('end', () => {
+        const reason = this.lastKickReason || this.lastDisconnectReason || '连接已断开';
+        console.log(`[Bot] Disconnected from server: ${reason}`);
         this.isConnected = false;
+        this.connectionState = 'disconnected';
+        this.lastDisconnectReason = reason;
+        this._emitLifecycleEvent('disconnect', { reason });
+
+        if (!spawned) {
+          rejectConnect('end', reason);
+          return;
+        }
+
+        if (this.bot === botInstance) {
+          this.bot = null;
+        }
+
+        this.pvpEnabled = false;
+        this.movements = null;
       });
 
-      this.bot.on('kicked', (reason) => {
-        console.log('[Bot] Kicked from server:', reason);
+      botInstance.on('kicked', (reason, loggedIn) => {
+        const message = this._formatReason(reason);
+        console.warn(`[Bot] Kicked from server: ${message}`);
         this.isConnected = false;
+        this.lastKickReason = message;
+        this.lastDisconnectReason = message;
+        this._emitLifecycleEvent('kicked', {
+          reason: message,
+          loggedIn: Boolean(loggedIn),
+        });
+
+        if (!spawned) {
+          rejectConnect('kicked', message, { loggedIn: Boolean(loggedIn) });
+        }
       });
 
-      // Chat message handler
-      this.bot.on('chat', (username, message) => {
-        if (username === this.bot.username) return;
+      botInstance.on('chat', (username, message) => {
+        if (username === botInstance.username) return;
         console.log(`[Chat] <${username}> ${message}`);
       });
     });
@@ -172,7 +382,7 @@ export class Bot {
 
   /**
    * Send a chat message
-   * @param {string} message 
+   * @param {string} message
    */
   chat(message) {
     if (this.bot) {
@@ -208,7 +418,7 @@ export class Bot {
 
   /**
    * Get nearby entities
-   * @param {number} range 
+   * @param {number} range
    * @returns {Array}
    */
   getNearbyEntities(range = 16) {
@@ -344,11 +554,30 @@ export class Bot {
     };
   }
 
+  getConnectionStatus() {
+    return {
+      connected: this.isConnected,
+      state: this.connectionState,
+      host: config.minecraft.host,
+      port: config.minecraft.port,
+      username: config.minecraft.username,
+      version: config.minecraft.version,
+      connectTimeoutMs: config.minecraft.connectTimeoutMs,
+      lastConnectStartedAt: this.lastConnectStartedAt,
+      lastSpawnAt: this.lastSpawnAt,
+      lastKickReason: this.lastKickReason,
+      lastDisconnectReason: this.lastDisconnectReason,
+      lastConnectError: this.lastConnectError,
+    };
+  }
+
   /**
    * Disconnect from server
    */
   disconnect() {
     if (this.bot) {
+      this.lastDisconnectReason = this.lastDisconnectReason || '手动断开连接';
+      this.connectionState = 'disconnected';
       if (this.hasPvpPlugin() && typeof this.bot.pvp.forceStop === 'function') {
         this.bot.pvp.forceStop();
       }
@@ -356,6 +585,7 @@ export class Bot {
       this.bot = null;
       this.isConnected = false;
       this.pvpEnabled = false;
+      this.movements = null;
     }
   }
 }

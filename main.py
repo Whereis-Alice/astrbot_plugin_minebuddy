@@ -23,7 +23,7 @@ from .script_executor import ScriptExecutor
     "astrbot_plugin_minebuddy",
     "MineBuddy",
     "MineBuddy Minecraft Bot 插件 - MC/群聊上下文互通 + LLM工具控制Bot",
-    "1.2.0",
+    "1.2.1",
     "",
 )
 class MineBuddyPlugin(Star):
@@ -41,6 +41,7 @@ class MineBuddyPlugin(Star):
         self.mc_port = config.get("mc_port", 25565)
         self.mc_username = config.get("mc_username", "LLM_Bot")
         self.mc_version = config.get("mc_version", "1.20.1")
+        self.mc_connect_timeout_sec = max(int(config.get("mc_connect_timeout_sec", 30) or 30), 5)
         self.auto_connect = config.get("auto_connect", False)
         self.viewer_enabled = config.get("viewer_enabled", False)
         self.viewer_port = config.get("viewer_port", 3007)
@@ -78,6 +79,7 @@ class MineBuddyPlugin(Star):
         
         # 子进程 & Agent loop
         self._bot_process = None
+        self._bot_log_thread = None
         self._agent_task: Optional[asyncio.Task] = None
         self._last_health_alert = 0
         self._last_food_alert = 0
@@ -164,6 +166,7 @@ class MineBuddyPlugin(Star):
             "MC_PORT": str(self.mc_port),
             "MC_USERNAME": str(self.mc_username),
             "MC_VERSION": str(self.mc_version),
+            "MC_CONNECT_TIMEOUT_MS": str(self.mc_connect_timeout_sec * 1000),
             "BOT_SERVICE_PORT": str(self.bot_service_port),
             "AUTO_CONNECT": "true" if self.auto_connect else "false",
             "VIEWER_ENABLED": "true" if self.viewer_enabled else "false",
@@ -175,13 +178,23 @@ class MineBuddyPlugin(Star):
                 ["node", str(server_js)],
                 cwd=str(bot_path),
                 env=env,
-                stdout=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                bufsize=1,
             )
+            self._start_bot_log_forwarder()
             logger.info(f"[MineBuddy] Bot 服务已启动 (PID: {self._bot_process.pid}) | MC: {self.mc_host}:{self.mc_port} | 端口: {self.bot_service_port}")
             
             # 等待服务就绪
             await asyncio.sleep(3)
+            if self._bot_process.poll() is not None:
+                logger.error(
+                    f"[MineBuddy] Bot 服务启动后很快退出，退出码: {self._bot_process.returncode}。"
+                    " 请检查上面的 [MineBuddy/Node] 日志。"
+                )
             
         except FileNotFoundError:
             logger.error("[MineBuddy] 未找到 node 命令，请确保 Node.js 已安装并在 PATH 中")
@@ -201,6 +214,42 @@ class MineBuddyPlugin(Star):
             except Exception as e:
                 logger.warning(f"[MineBuddy] 停止 Bot 服务时出错: {e}")
             self._bot_process = None
+            self._bot_log_thread = None
+
+    def _start_bot_log_forwarder(self):
+        """Forward Node child-process logs into AstrBot logs."""
+        import threading
+
+        if not self._bot_process or not self._bot_process.stdout:
+            return
+
+        def _reader():
+            try:
+                for raw_line in self._bot_process.stdout:
+                    line = raw_line.rstrip()
+                    if not line:
+                        continue
+                    self._log_bot_process_line(line)
+            except Exception as e:
+                logger.warning(f"[MineBuddy] 读取 Node 日志时出错: {e}")
+
+        self._bot_log_thread = threading.Thread(
+            target=_reader,
+            name="MineBuddyNodeLogForwarder",
+            daemon=True,
+        )
+        self._bot_log_thread.start()
+
+    def _log_bot_process_line(self, line: str):
+        prefix = "[MineBuddy/Node]"
+        lower = line.lower()
+
+        if "error" in lower or "failed" in lower:
+            logger.error(f"{prefix} {line}")
+        elif "warn" in lower or "kicked" in lower:
+            logger.warning(f"{prefix} {line}")
+        else:
+            logger.info(f"{prefix} {line}")
     
     def _migrate_bundled_skills(self, target_dir: str):
         """首次运行时，将插件自带的技能复制到数据目录"""
@@ -306,8 +355,22 @@ class MineBuddyPlugin(Star):
         
         elif event_type == "kicked":
             reason = event.get("reason", "未知原因")
+            logger.warning(f"[MineBuddy] MC Bot 被服务器踢出: {reason}")
             await self._push_event(f"[MC事件] {self.bot_nickname}被踢出服务器: {reason}", wake_llm=False)
     
+        elif event_type == "disconnect":
+            reason = event.get("reason", "连接已断开")
+            logger.warning(f"[MineBuddy] MC Bot 连接断开: {reason}")
+        
+        elif event_type == "connect_error":
+            phase = event.get("phase", "unknown")
+            message = event.get("message", "unknown error")
+            logger.warning(f"[MineBuddy] MC 连接失败 | phase={phase} | {message}")
+        
+        elif event_type == "bot_error":
+            message = event.get("message", "unknown error")
+            logger.warning(f"[MineBuddy] MC Bot 运行时错误: {message}")
+
     async def _on_task_complete(self, task):
         """后台任务完成回调"""
         if task.status == TaskStatus.COMPLETED:

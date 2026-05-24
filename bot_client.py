@@ -78,7 +78,24 @@ class BotClient:
     async def connect_mc(self) -> Dict[str, Any]:
         """Tell bot to connect to Minecraft server"""
         response = await self.http_client.post("/connect")
-        response.raise_for_status()
+        try:
+            payload = response.json()
+        except Exception:
+            payload = None
+
+        if response.is_error:
+            if isinstance(payload, dict):
+                message = payload.get("message") or f"HTTP {response.status_code}"
+                details = payload.get("details") or payload.get("connection", {}).get("lastConnectError")
+                if details:
+                    raise RuntimeError(
+                        f"{message} | details={json.dumps(details, ensure_ascii=False)}"
+                    )
+                raise RuntimeError(message)
+            response.raise_for_status()
+
+        if isinstance(payload, dict):
+            return payload
         return response.json()
     
     async def disconnect_mc(self) -> Dict[str, Any]:

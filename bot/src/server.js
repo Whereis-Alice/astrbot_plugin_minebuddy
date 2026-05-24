@@ -49,31 +49,80 @@ class BotServer {
 
     // Get bot status
     this.app.get('/status', (req, res) => {
+      const connection = this.bot?.getConnectionStatus?.() || {
+        connected: false,
+        state: 'idle',
+        host: config.minecraft.host,
+        port: config.minecraft.port,
+        username: config.minecraft.username,
+        version: config.minecraft.version,
+        connectTimeoutMs: config.minecraft.connectTimeoutMs,
+        lastConnectStartedAt: null,
+        lastSpawnAt: null,
+        lastKickReason: null,
+        lastDisconnectReason: null,
+        lastConnectError: null,
+      };
+
       res.json({
-        connected: this.bot?.isConnected || false,
-        username: config.minecraft.username
+        connected: connection.connected,
+        username: config.minecraft.username,
+        connection,
       });
     });
 
     // Connect to Minecraft
     this.app.post('/connect', async (req, res) => {
+      const currentState = this.bot?.getConnectionStatus?.().state;
+
       try {
-        if (this.bot?.isConnected) {
-          return res.json({ success: true, message: 'Already connected' });
+        if (currentState === 'connecting') {
+          return res.status(409).json({
+            success: false,
+            message: 'A connection attempt is already in progress',
+            connection: this.bot.getConnectionStatus(),
+          });
         }
-        
+
+        if (this.bot?.isConnected) {
+          return res.json({
+            success: true,
+            message: 'Already connected',
+            connection: this.bot.getConnectionStatus(),
+          });
+        }
+
+        if (this.bot && !this.bot.isConnected) {
+          this.bot.disconnect();
+        }
+
+        this.actions = null;
+        this.observer = null;
         this.bot = new Bot();
+        this._attachLifecycleForwarding(this.bot);
         await this.bot.connect();
-        
+
         this.actions = new Actions(this.bot);
         this.observer = new Observer(this.bot);
-        
+
         // Setup event forwarding
         this._setupEventForwarding();
-        
-        res.json({ success: true, message: 'Connected to Minecraft' });
+
+        res.json({
+          success: true,
+          message: 'Connected to Minecraft',
+          connection: this.bot.getConnectionStatus(),
+        });
       } catch (error) {
-        res.status(500).json({ success: false, message: error.message });
+        console.error('[Server] Connect failed:', error);
+        this.actions = null;
+        this.observer = null;
+        res.status(500).json({
+          success: false,
+          message: error.message,
+          connection: this.bot?.getConnectionStatus?.() || null,
+          details: error.details || this.bot?.getConnectionStatus?.().lastConnectError || null,
+        });
       }
     });
 
@@ -134,6 +183,20 @@ class BotServer {
     });
   }
 
+  _attachLifecycleForwarding(bot) {
+    if (!bot || typeof bot.addLifecycleHandler !== 'function') {
+      return;
+    }
+
+    bot.addLifecycleHandler((event) => {
+      if (event.type === 'disconnect' || event.type === 'connect_error') {
+        this.actions = null;
+        this.observer = null;
+      }
+      this._broadcast(event);
+    });
+  }
+
   _setupEventForwarding() {
     if (!this.bot) return;
     
@@ -164,14 +227,6 @@ class BotServer {
     mcBot.on('death', () => {
       this._broadcast({
         type: 'death',
-        timestamp: Date.now()
-      });
-    });
-
-    // Forward spawn
-    mcBot.on('spawn', () => {
-      this._broadcast({
-        type: 'spawn',
         timestamp: Date.now()
       });
     });
@@ -287,6 +342,7 @@ class BotServer {
           console.log('[Server] Auto-connect enabled, connecting to Minecraft...');
           try {
             this.bot = new Bot();
+            this._attachLifecycleForwarding(this.bot);
             await this.bot.connect();
             this.actions = new Actions(this.bot);
             this.observer = new Observer(this.bot);
@@ -294,6 +350,7 @@ class BotServer {
             console.log('[Server] Auto-connect successful!');
           } catch (error) {
             console.error('[Server] Auto-connect failed:', error.message);
+            console.error('[Server] Auto-connect details:', this.bot?.getConnectionStatus?.());
           }
         }
         
