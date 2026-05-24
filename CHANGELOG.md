@@ -2,6 +2,15 @@
 
 本文档记录 MineBuddy 分支的重要变更。
 
+## [1.3.1] - 2026-05-25
+
+### 优化
+
+- 统一 AstrBot WebUI 配置页文案，将多处长描述拆分为“短 description + 详细 hint”，减少配置项说明被界面截断的问题。
+- 为插件补充官方兼容的 `.astrbot-plugin/i18n/zh-CN.json`，确保中文界面下也能使用更适合 WebUI 的配置文案。
+- 将 `mc_chat_bridge_mode`、`observation_mode`、`agent_loop_observation_mode` 改为带中文标签的下拉选项，减少手填配置值时的拼写错误。
+- 统一 Node Bot 服务版本与元数据命名，日志横幅、服务自报版本、`bot/package*.json` 不再混用旧的 `llm-mc-bot` 标识。
+
 ## [1.3.0] - 2026-05-25
 
 ### 新增

@@ -1,5 +1,5 @@
 name: astrbot_plugin_minebuddy
 desc: "MineBuddy Minecraft Bot 插件 - 将 MC Bot 能力集成到 AstrBot，支持群聊/MC上下文互通，让 Bot 真正能操控角色游玩 MC"
 author: "Jason.Joestar"
-version: "1.3.0"
+version: "1.3.1"
 repo: "https://github.com/Whereis-Alice/astrbot_plugin_minebuddy"

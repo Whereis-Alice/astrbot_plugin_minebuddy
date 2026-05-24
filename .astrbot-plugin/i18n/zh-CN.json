@@ -1,0 +1,82 @@
+{
+  "config": {
+    "auto_start_bot": {
+      "description": "启动插件时自动拉起 Bot 服务"
+    },
+    "bot_dir": {
+      "description": "自定义 Bot 项目目录",
+      "hint": "需包含 src/index.js；留空则使用插件内置 bot/ 目录。"
+    },
+    "mc_version": {
+      "description": "Minecraft 协议版本",
+      "hint": "例如 1.20.1、1.21.1。"
+    },
+    "mc_connect_timeout_sec": {
+      "description": "等待进服超时秒数",
+      "hint": "等待 Bot 完成进服（spawn）的最长时间，超时后会尽快返回明确错误。"
+    },
+    "bot_http_url": {
+      "description": "手动模式的 HTTP 地址",
+      "hint": "仅当关闭自动启动时使用；自动启动时会根据 bot_service_port 自动生成。"
+    },
+    "bot_ws_url": {
+      "description": "手动模式的 WebSocket 地址",
+      "hint": "留空则自动从 HTTP 地址推断。"
+    },
+    "unified_group_umo": {
+      "description": "接收 MC 聊天注入的群聊 UMO",
+      "hint": "格式示例：aiocqhttp_default:GroupMessage:123456789"
+    },
+    "enable_chat_response": {
+      "description": "LLM 回复是否回发到 MC"
+    },
+    "mc_chat_bridge_mode": {
+      "description": "MC 聊天如何进入上下文",
+      "hint": "direct=每条直通；summary=只写摘要；hybrid=点名或命中关键词时直通，其余按窗口合并摘要。推荐 hybrid。",
+      "labels": ["逐条直通", "仅摘要", "混合模式（推荐）"]
+    },
+    "mc_chat_batch_window_sec": {
+      "description": "聊天摘要合并窗口",
+      "hint": "仅在 summary / hybrid 下生效。普通闲聊会在这个时间窗口内合并成一条摘要后再注入上下文。"
+    },
+    "mc_chat_batch_max_messages": {
+      "description": "单条摘要最多合并几条",
+      "hint": "达到上限会立即提前发送摘要，避免普通闲聊在队列里持续堆积。"
+    },
+    "mc_chat_direct_keywords": {
+      "description": "hybrid 模式的直通关键词",
+      "hint": "逗号分隔。命中这些关键词的消息会直接注入上下文，不等待摘要，例如：bot,机器人,面包,Alice"
+    },
+    "enable_agent_loop": {
+      "description": "后台环境感知与主动唤醒",
+      "hint": "定期检测环境状态，在低血量、低饥饿或附近有敌对生物时主动唤醒 LLM。"
+    },
+    "health_threshold": {
+      "description": "低血量唤醒阈值",
+      "hint": "生命值低于该值时主动唤醒 LLM，满血为 20。"
+    },
+    "food_threshold": {
+      "description": "低饥饿唤醒阈值",
+      "hint": "饥饿值低于该值时主动唤醒 LLM，满饱食为 20。"
+    },
+    "observation_mode": {
+      "description": "默认观察数据量",
+      "hint": "compact=紧凑模式，只保留高价值状态；full=完整模式，包含背包、聊天、事件和附近实体等更多上下文。推荐 compact。",
+      "labels": ["紧凑（推荐）", "完整"]
+    },
+    "agent_loop_observation_mode": {
+      "description": "Agent Loop 使用的观察量",
+      "hint": "agent_loop=专用轻量快照，只保留告警判断所需字段；compact=通用紧凑观察。推荐 agent_loop。",
+      "labels": ["轻量快照（推荐）", "通用紧凑"]
+    },
+    "auto_connect": {
+      "description": "Bot 服务启动后自动进服"
+    },
+    "viewer_enabled": {
+      "description": "启用网页可视化 Viewer"
+    },
+    "viewer_port": {
+      "description": "Viewer 网页端口"
+    }
+  }
+}

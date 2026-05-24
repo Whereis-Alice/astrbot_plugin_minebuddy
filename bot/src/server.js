@@ -7,7 +7,7 @@ import { Observer } from './observer.js';
 import { config } from './config.js';
 
 const SERVICE_NAME = 'minebuddy';
-const SERVICE_VERSION = '0.2.1';
+const SERVICE_VERSION = '1.3.1';
 
 /**
  * HTTP/WebSocket Server for the Mineflayer Bot

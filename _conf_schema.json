@@ -2,13 +2,14 @@
   "auto_start_bot": {
     "type": "bool",
     "title": "自动启动 Bot 服务",
-    "description": "插件启动时自动拉起 Node.js Mineflayer Bot 服务进程",
+    "description": "启动插件时自动拉起 Bot 服务",
     "default": true
   },
   "bot_dir": {
     "type": "string",
     "title": "Bot 服务目录",
-    "description": "Node.js Bot 项目路径，需包含 src/index.js；留空则使用插件内置 bot/ 目录",
+    "description": "自定义 Bot 项目目录",
+    "hint": "需包含 src/index.js；留空则使用插件内置 bot/ 目录。",
     "default": ""
   },
   "mc_host": {
@@ -32,13 +33,15 @@
   "mc_version": {
     "type": "string",
     "title": "MC 版本",
-    "description": "Minecraft 协议版本，例如 1.20.1、1.21.1",
+    "description": "Minecraft 协议版本",
+    "hint": "例如 1.20.1、1.21.1。",
     "default": "1.20.1"
   },
   "mc_connect_timeout_sec": {
     "type": "int",
     "title": "MC 连接超时（秒）",
-    "description": "等待 Bot 完成进服（spawn）的最长时间，超时后会尽快返回明确错误",
+    "description": "等待进服超时秒数",
+    "hint": "等待 Bot 完成进服（spawn）的最长时间，超时后会尽快返回明确错误。",
     "default": 30
   },
   "bot_service_port": {
@@ -50,19 +53,22 @@
   "bot_http_url": {
     "type": "string",
     "title": "Bot Service HTTP 地址（手动模式）",
-    "description": "仅当关闭自动启动时使用；自动启动时会根据 bot_service_port 自动生成",
+    "description": "手动模式的 HTTP 地址",
+    "hint": "仅当关闭自动启动时使用；自动启动时会根据 bot_service_port 自动生成。",
     "default": "http://localhost:3001"
   },
   "bot_ws_url": {
     "type": "string",
     "title": "Bot Service WebSocket 地址",
-    "description": "留空则自动从 HTTP 地址推断",
+    "description": "手动模式的 WebSocket 地址",
+    "hint": "留空则自动从 HTTP 地址推断。",
     "default": ""
   },
   "unified_group_umo": {
     "type": "string",
     "title": "绑定 QQ 群 UMO",
-    "description": "MC 聊天消息会注入到该群上下文中，格式示例：aiocqhttp_default:GroupMessage:123456789",
+    "description": "接收 MC 聊天注入的群聊 UMO",
+    "hint": "格式示例：aiocqhttp_default:GroupMessage:123456789",
     "default": ""
   },
   "bot_nickname": {
@@ -74,37 +80,44 @@
   "enable_chat_response": {
     "type": "bool",
     "title": "启用聊天回复",
-    "description": "是否把 LLM 的回复发送回 MC 聊天",
+    "description": "LLM 回复是否回发到 MC",
     "default": true
   },
   "mc_chat_bridge_mode": {
     "type": "string",
     "title": "MC 聊天注入模式",
-    "description": "控制 MC 玩家聊天如何注入 AstrBot 上下文：direct=每条都直接注入，summary=只做聊天摘要，hybrid=点名 Bot/命中关键词时直通，其余消息按时间窗口合并摘要。推荐 hybrid，在保留陪玩感的同时显著降低 token 消耗。",
+    "description": "MC 聊天如何进入上下文",
+    "hint": "direct=每条直通；summary=只写摘要；hybrid=点名或命中关键词时直通，其余按窗口合并摘要。推荐 hybrid。",
+    "options": ["direct", "summary", "hybrid"],
+    "labels": ["逐条直通", "仅摘要", "混合模式（推荐）"],
     "default": "hybrid"
   },
   "mc_chat_batch_window_sec": {
     "type": "int",
     "title": "MC 聊天摘要窗口（秒）",
-    "description": "当 MC 聊天注入模式为 summary 或 hybrid 时，普通闲聊会在这个时间窗口内合并成一条摘要消息后再注入上下文。",
+    "description": "聊天摘要合并窗口",
+    "hint": "仅在 summary / hybrid 下生效。普通闲聊会在这个时间窗口内合并成一条摘要后再注入上下文。",
     "default": 15
   },
   "mc_chat_batch_max_messages": {
     "type": "int",
     "title": "MC 聊天摘要最多合并条数",
-    "description": "每条聊天摘要最多合并多少条普通闲聊；达到上限会立即提前发送摘要，避免队列无限堆积。",
+    "description": "单条摘要最多合并几条",
+    "hint": "达到上限会立即提前发送摘要，避免普通闲聊在队列里持续堆积。",
     "default": 4
   },
   "mc_chat_direct_keywords": {
     "type": "string",
     "title": "MC 聊天直通关键词",
-    "description": "逗号分隔。处于 hybrid 模式时，聊天中命中这些关键词会直接注入上下文，而不是等待摘要，例如：bot,机器人,面包,Alice",
+    "description": "hybrid 模式的直通关键词",
+    "hint": "逗号分隔。命中这些关键词的消息会直接注入上下文，不等待摘要，例如：bot,机器人,面包,Alice",
     "default": "bot,机器人,面包,Alice"
   },
   "enable_agent_loop": {
     "type": "bool",
     "title": "启用 Agent 循环",
-    "description": "定期检测环境状态，在低血量、饥饿或附近有敌对生物时主动唤醒 LLM",
+    "description": "后台环境感知与主动唤醒",
+    "hint": "定期检测环境状态，在低血量、低饥饿或附近有敌对生物时主动唤醒 LLM。",
     "default": false
   },
   "agent_tick_rate": {
@@ -116,43 +129,51 @@
   "health_threshold": {
     "type": "int",
     "title": "血量告警阈值",
-    "description": "生命值低于该阈值时主动唤醒 LLM（满血 20）",
+    "description": "低血量唤醒阈值",
+    "hint": "生命值低于该值时主动唤醒 LLM，满血为 20。",
     "default": 6
   },
   "food_threshold": {
     "type": "int",
     "title": "饥饿告警阈值",
-    "description": "饥饿值低于该阈值时主动唤醒 LLM（满饱食 20）",
+    "description": "低饥饿唤醒阈值",
+    "hint": "饥饿值低于该值时主动唤醒 LLM，满饱食为 20。",
     "default": 4
   },
   "observation_mode": {
     "type": "string",
     "title": "LLM 观察数据模式",
-    "description": "控制 `mc_get_observation` 默认返回的数据量：compact=紧凑模式，只保留高价值状态；full=完整模式，包含背包、聊天、事件、附近实体等更多上下文。推荐 compact。",
+    "description": "默认观察数据量",
+    "hint": "compact=紧凑模式，只保留高价值状态；full=完整模式，包含背包、聊天、事件和附近实体等更多上下文。推荐 compact。",
+    "options": ["compact", "full"],
+    "labels": ["紧凑（推荐）", "完整"],
     "default": "compact"
   },
   "agent_loop_observation_mode": {
     "type": "string",
     "title": "Agent 循环观察模式",
-    "description": "控制 Agent Loop 检测环境时使用的数据模式：agent_loop=专用轻量快照，仅保留告警判断所需字段；compact=通用紧凑观察。推荐 agent_loop。",
+    "description": "Agent Loop 使用的观察量",
+    "hint": "agent_loop=专用轻量快照，只保留告警判断所需字段；compact=通用紧凑观察。推荐 agent_loop。",
+    "options": ["agent_loop", "compact"],
+    "labels": ["轻量快照（推荐）", "通用紧凑"],
     "default": "agent_loop"
   },
   "auto_connect": {
     "type": "bool",
     "title": "Bot 自动连接 MC",
-    "description": "Bot 服务启动后自动连接 Minecraft 服务器",
+    "description": "Bot 服务启动后自动进服",
     "default": false
   },
   "viewer_enabled": {
     "type": "bool",
     "title": "启用 Viewer",
-    "description": "启用 prismarine-viewer 网页可视化",
+    "description": "启用网页可视化 Viewer",
     "default": false
   },
   "viewer_port": {
     "type": "int",
     "title": "Viewer 端口",
-    "description": "prismarine-viewer 的端口",
+    "description": "Viewer 网页端口",
     "default": 3007
   }
 }
