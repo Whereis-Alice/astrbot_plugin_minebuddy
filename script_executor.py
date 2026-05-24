@@ -65,6 +65,41 @@ class BotAPI:
         result = await self._bot_client.execute_action("attack", {"entityType": entityType})
         self.results.append({"action": "attack", "result": result})
         return result
+
+    async def attackNearestHostile(self, maxDistance: int = 16, preferredType: str = None) -> Dict[str, Any]:
+        params = {"maxDistance": maxDistance}
+        if preferredType:
+            params["preferredType"] = preferredType
+        result = await self._bot_client.execute_action("attackNearestHostile", params)
+        self.results.append({"action": "attackNearestHostile", "result": result})
+        return result
+
+    async def defendSelf(self, maxDistance: int = 16) -> Dict[str, Any]:
+        result = await self._bot_client.execute_action("defendSelf", {"maxDistance": maxDistance})
+        self.results.append({"action": "defendSelf", "result": result})
+        return result
+
+    async def retreat(self, distance: int = 8, maxDistance: int = 16) -> Dict[str, Any]:
+        result = await self._bot_client.execute_action("retreat", {"distance": distance, "maxDistance": maxDistance})
+        self.results.append({"action": "retreat", "result": result})
+        return result
+
+    async def stopCombat(self) -> Dict[str, Any]:
+        result = await self._bot_client.execute_action("stopCombat", {})
+        self.results.append({"action": "stopCombat", "result": result})
+        return result
+
+    async def kiteCreeper(self, retreatDistance: int = 6, maxCycles: int = 3, maxDistance: int = 16) -> Dict[str, Any]:
+        result = await self._bot_client.execute_action(
+            "kiteCreeper",
+            {
+                "retreatDistance": retreatDistance,
+                "maxCycles": maxCycles,
+                "maxDistance": maxDistance,
+            },
+        )
+        self.results.append({"action": "kiteCreeper", "result": result})
+        return result
     
     async def collectBlock(self, blockType: str) -> Dict[str, Any]:
         result = await self._bot_client.execute_action("collectBlock", {"blockType": blockType})
@@ -224,18 +259,28 @@ class BotAPI:
     
     # ===== 观测 =====
     
-    async def getObservation(self) -> Dict[str, Any]:
-        return await self._bot_client.get_observation()
+    async def getObservation(self, mode: str = "full") -> Dict[str, Any]:
+        if mode == "compact":
+            return await self._bot_client.get_observation(mode="compact")
+        if mode == "agent_loop":
+            return await self._bot_client.get_observation(mode="agent_loop")
+        return await self._bot_client.get_observation(
+            mode="full",
+            include_inventory=True,
+            include_chat=True,
+            include_events=True,
+            include_nearby_entities=True,
+        )
     
     async def getStatus(self) -> Dict[str, Any]:
         return await self._bot_client.get_status()
     
     async def getPosition(self) -> Dict[str, Any]:
-        obs = await self._bot_client.get_observation()
+        obs = await self._bot_client.get_observation(mode="compact")
         return obs.get("position", {"x": 0, "y": 0, "z": 0})
     
     async def getHealth(self) -> Dict[str, Any]:
-        obs = await self._bot_client.get_observation()
+        obs = await self._bot_client.get_observation(mode="compact")
         return obs.get("health", {"health": 20, "food": 20})
     
     # ===== 事件等待 =====

@@ -1,0 +1,56 @@
+{
+  "采集木头": {
+    "name": "采集木头",
+    "description": "自动寻找并采集指定数量的木头（支持各种木头类型）",
+    "params": ["count"],
+    "file": "采集木头.py"
+  },
+  "打怪": {
+    "name": "打怪",
+    "description": "自动寻找并击杀敌对生物，支持指定类型和数量",
+    "params": ["count", "mob_type"],
+    "file": "打怪.py"
+  },
+  "合成": {
+    "name": "合成",
+    "description": "合成指定物品，自动处理工作台、检查材料",
+    "params": ["itemName", "count"],
+    "file": "合成.py"
+  },
+  "挖矿": {
+    "name": "挖矿",
+    "description": "自动寻找并采集指定类型的矿石，会自动挖开挡路的方块",
+    "params": ["oreType", "count"],
+    "file": "挖矿.py"
+  },
+  "钓鱼": {
+    "name": "钓鱼",
+    "description": "自动钓鱼一段时间",
+    "params": ["duration"],
+    "file": "钓鱼.py"
+  },
+  "拾取物品": {
+    "name": "拾取物品",
+    "description": "自动拾取附近掉落的物品",
+    "params": ["itemName", "maxDistance", "timeout"],
+    "file": "拾取物品.py"
+  },
+  "丢给玩家": {
+    "name": "丢给玩家",
+    "description": "给指定玩家丢物品，并通过事件确认玩家是否捡起",
+    "params": ["player_name", "item_name", "count", "timeout"],
+    "file": "丢给玩家.py"
+  },
+  "战斗自保": {
+    "name": "战斗自保",
+    "description": "遭遇敌对生物或受伤时，优先吃食物、反击最近威胁，必要时主动后撤",
+    "params": ["max_rounds", "retreat_distance"],
+    "file": "战斗自保.py"
+  },
+  "清理附近威胁": {
+    "name": "清理附近威胁",
+    "description": "逐个清理附近敌对生物，自动对苦力怕采用风筝策略",
+    "params": ["max_targets", "scan_range"],
+    "file": "清理附近威胁.py"
+  }
+}

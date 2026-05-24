@@ -23,7 +23,7 @@ from .script_executor import ScriptExecutor
     "astrbot_plugin_minebuddy",
     "MineBuddy",
     "MineBuddy Minecraft Bot 插件 - MC/群聊上下文互通 + LLM工具控制Bot",
-    "1.2.4",
+    "1.3.0",
     "",
 )
 class MineBuddyPlugin(Star):
@@ -57,10 +57,20 @@ class MineBuddyPlugin(Star):
         self.unified_group_umo = config.get("unified_group_umo", "")
         self.bot_nickname = config.get("bot_nickname", "小面包")
         self.enable_chat_response = config.get("enable_chat_response", True)
+        self.mc_chat_bridge_mode = str(config.get("mc_chat_bridge_mode", "hybrid") or "hybrid").lower()
+        self.mc_chat_batch_window_sec = max(int(config.get("mc_chat_batch_window_sec", 15) or 15), 5)
+        self.mc_chat_batch_max_messages = max(int(config.get("mc_chat_batch_max_messages", 4) or 4), 1)
+        self.mc_chat_direct_keywords = [
+            str(keyword).strip().lower()
+            for keyword in (config.get("mc_chat_direct_keywords", "bot,机器人,面包,alice") or "").split(",")
+            if str(keyword).strip()
+        ]
         self.enable_agent_loop = config.get("enable_agent_loop", False)
         self.agent_tick_rate = config.get("agent_tick_rate", 5)
         self.health_threshold = config.get("health_threshold", 6)
         self.food_threshold = config.get("food_threshold", 4)
+        self.observation_mode = str(config.get("observation_mode", "compact") or "compact").lower()
+        self.agent_loop_observation_mode = str(config.get("agent_loop_observation_mode", "agent_loop") or "agent_loop").lower()
         
         # 从 UMO 中提取 session_id
         self.session_id = ""
@@ -86,6 +96,8 @@ class MineBuddyPlugin(Star):
         self._last_health_alert = 0
         self._last_food_alert = 0
         self._last_threat_alert = 0
+        self._pending_chat_batch = []
+        self._chat_batch_task: Optional[asyncio.Task] = None
 
     
     async def initialize(self):
@@ -107,7 +119,7 @@ class MineBuddyPlugin(Star):
         skills_data_dir = f"{data_dir}/skills"
         self._migrate_legacy_data_dir(skills_data_dir)
         
-        # 首次运行时，将插件自带的技能复制到数据目录
+        # 将插件自带的运行时技能复制到数据目录
         self._migrate_bundled_skills(skills_data_dir)
         
         self.task_manager = TaskManager()
@@ -144,6 +156,12 @@ class MineBuddyPlugin(Star):
             self._agent_task.cancel()
             try:
                 await self._agent_task
+            except asyncio.CancelledError:
+                pass
+        if self._chat_batch_task:
+            self._chat_batch_task.cancel()
+            try:
+                await self._chat_batch_task
             except asyncio.CancelledError:
                 pass
         if self.task_manager:
@@ -489,18 +507,16 @@ class MineBuddyPlugin(Star):
         return None
     
     def _migrate_bundled_skills(self, target_dir: str):
-        """首次运行时，将插件自带的技能复制到数据目录"""
+        """同步插件自带运行时技能到数据目录，缺失文件会自动补齐"""
         import os
+        import json
         import shutil
         from pathlib import Path
         
         target_path = Path(target_dir)
-        if (target_path / "index.json").exists():
-            return  # 已迁移过
-        
-        # 插件源目录下的 skills/
+        # 插件源目录下的 builtin_skills/
         plugin_dir = Path(os.path.dirname(os.path.abspath(__file__)))
-        bundled_skills_dir = plugin_dir / "skills"
+        bundled_skills_dir = plugin_dir / "builtin_skills"
         
         if not bundled_skills_dir.exists():
             return
@@ -509,11 +525,40 @@ class MineBuddyPlugin(Star):
         count = 0
         for f in bundled_skills_dir.iterdir():
             if f.suffix in ('.py', '.json'):
-                shutil.copy2(f, target_path / f.name)
+                target_file = target_path / f.name
+                if target_file.exists():
+                    continue
+                shutil.copy2(f, target_file)
                 count += 1
+
+        bundled_index_path = bundled_skills_dir / "index.json"
+        target_index_path = target_path / "index.json"
+        if bundled_index_path.exists():
+            try:
+                bundled_index = json.loads(bundled_index_path.read_text(encoding="utf-8"))
+            except Exception:
+                bundled_index = {}
+
+            try:
+                target_index = json.loads(target_index_path.read_text(encoding="utf-8")) if target_index_path.exists() else {}
+            except Exception:
+                target_index = {}
+
+            merged = False
+            for skill_name, metadata in bundled_index.items():
+                if skill_name not in target_index:
+                    target_index[skill_name] = metadata
+                    merged = True
+
+            if merged:
+                target_index_path.write_text(
+                    json.dumps(target_index, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+                logger.info(f"[MineBuddy] 已同步内置技能索引到 {target_index_path}")
         
         if count > 0:
-            logger.info(f"[MineBuddy] 已迁移 {count} 个内置技能到 {target_dir}")
+            logger.info(f"[MineBuddy] 已补充 {count} 个内置技能到 {target_dir}")
 
     def _migrate_legacy_data_dir(self, target_dir: str):
         """将旧插件数据目录中的技能迁移到新的插件目录，避免改名后丢失数据。"""
@@ -569,6 +614,52 @@ class MineBuddyPlugin(Star):
             raw_message={"_minebuddy_wake_llm": wake_llm},
         )
         await StarTools.create_event(abm=abm, platform="aiocqhttp", is_wake=wake_llm)
+
+    def _should_direct_forward_chat(self, username: str, message: str) -> bool:
+        text = f"{username} {message}".lower()
+        if self.mc_chat_bridge_mode == "direct":
+            return True
+        if self.mc_chat_bridge_mode == "summary":
+            return False
+        if self.bot_nickname.lower() in text:
+            return True
+        return any(keyword in text for keyword in self.mc_chat_direct_keywords)
+
+    async def _flush_chat_batch(self):
+        if not self._pending_chat_batch:
+            return
+
+        pending_all = list(self._pending_chat_batch)
+        self._pending_chat_batch.clear()
+        pending = pending_all[:self.mc_chat_batch_max_messages]
+        omitted_count = max(0, len(pending_all) - len(pending))
+
+        preview = " | ".join(
+            f"{item.get('username', '?')}: {item.get('message', '')}"
+            for item in pending
+        )
+        extra = f"（另有 {omitted_count} 条已合并省略）" if omitted_count > 0 else ""
+        await self._push_event(f"[MC聊天摘要]{extra} {preview}", sender_name="MC聊天", wake_llm=False)
+
+    async def _schedule_chat_batch_flush(self):
+        try:
+            await asyncio.sleep(self.mc_chat_batch_window_sec)
+            await self._flush_chat_batch()
+        except asyncio.CancelledError:
+            return
+        finally:
+            self._chat_batch_task = None
+
+    async def _buffer_chat_event(self, username: str, message: str):
+        self._pending_chat_batch.append({"username": username, "message": message})
+        if len(self._pending_chat_batch) >= self.mc_chat_batch_max_messages:
+            if self._chat_batch_task:
+                self._chat_batch_task.cancel()
+                self._chat_batch_task = None
+            await self._flush_chat_batch()
+            return
+        if not self._chat_batch_task:
+            self._chat_batch_task = asyncio.create_task(self._schedule_chat_batch_flush())
     
     async def _on_bot_event(self, event: Dict[str, Any]):
         """处理来自 Bot WebSocket 的事件"""
@@ -579,7 +670,10 @@ class MineBuddyPlugin(Star):
             message = event.get("message", "")
             # 忽略 bot 自己的消息
             if username and username.lower() != self.bot_nickname.lower():
-                await self._push_event(message, sender_name=username, wake_llm=False)
+                if self._should_direct_forward_chat(username, message):
+                    await self._push_event(message, sender_name=username, wake_llm=False)
+                else:
+                    await self._buffer_chat_event(username, message)
         
         elif event_type == "death":
             await self._push_event(f"[MC事件] {self.bot_nickname}死亡了！", wake_llm=True)
@@ -685,7 +779,10 @@ class MineBuddyPlugin(Star):
                 await asyncio.sleep(self.agent_tick_rate)
                 
                 try:
-                    obs = await self.bot_client.get_observation()
+                    obs = await self.bot_client.get_observation(
+                        mode=self.agent_loop_observation_mode,
+                        include_inventory=True,
+                    )
                 except Exception:
                     continue  # Bot 可能还没连接
                 
@@ -815,6 +912,61 @@ class MineBuddyPlugin(Star):
             entity_type(string): 实体类型，如zombie、skeleton、creeper等
         """
         return await self.bot_client.execute_action("attack", {"entityType": entity_type})
+
+    @filter.llm_tool(name="mc_attack_nearest_hostile")
+    async def tool_attack_nearest_hostile(self, event: AstrMessageEvent, max_distance: int = 16, preferred_type: str = ""):
+        """攻击最近的敌对生物，减少先扫描再拼动作链的负担
+
+        Args:
+            max_distance(number): 搜索敌对生物的最大距离，默认16
+            preferred_type(string): 可选，优先攻击某种敌对生物，如creeper、skeleton
+        """
+        params = {"maxDistance": max_distance}
+        if preferred_type:
+            params["preferredType"] = preferred_type
+        return await self.bot_client.execute_action("attackNearestHostile", params)
+
+    @filter.llm_tool(name="mc_defend_self")
+    async def tool_defend_self(self, event: AstrMessageEvent, max_distance: int = 16):
+        """优先对当前或最近的威胁进行自保反击
+
+        Args:
+            max_distance(number): 搜索威胁的最大距离，默认16
+        """
+        return await self.bot_client.execute_action("defendSelf", {"maxDistance": max_distance})
+
+    @filter.llm_tool(name="mc_retreat")
+    async def tool_retreat(self, event: AstrMessageEvent, distance: int = 8, max_distance: int = 16):
+        """脱离当前或最近威胁，主动后撤拉开距离
+
+        Args:
+            distance(number): 后撤距离，默认8格
+            max_distance(number): 搜索威胁的最大距离，默认16
+        """
+        return await self.bot_client.execute_action("retreat", {"distance": distance, "maxDistance": max_distance})
+
+    @filter.llm_tool(name="mc_stop_combat")
+    async def tool_stop_combat(self, event: AstrMessageEvent):
+        """停止当前战斗追击并清理战斗状态"""
+        return await self.bot_client.execute_action("stopCombat", {})
+
+    @filter.llm_tool(name="mc_kite_creeper")
+    async def tool_kite_creeper(self, event: AstrMessageEvent, retreat_distance: int = 6, max_cycles: int = 3, max_distance: int = 16):
+        """针对苦力怕执行打一下就拉开的风筝战斗逻辑
+
+        Args:
+            retreat_distance(number): 每次攻击后拉开的距离，默认6格
+            max_cycles(number): 最大攻击-后撤循环次数，默认3
+            max_distance(number): 搜索苦力怕的最大距离，默认16
+        """
+        return await self.bot_client.execute_action(
+            "kiteCreeper",
+            {
+                "retreatDistance": retreat_distance,
+                "maxCycles": max_cycles,
+                "maxDistance": max_distance,
+            },
+        )
     
     @filter.llm_tool(name="mc_collect_block")
     async def tool_collect_block(self, event: AstrMessageEvent, block_type: str):
@@ -942,8 +1094,17 @@ class MineBuddyPlugin(Star):
     
     @filter.llm_tool(name="mc_get_observation")
     async def tool_get_observation(self, event: AstrMessageEvent):
-        """获取 Bot 的当前状态（位置、生命值、饥饿值、背包、附近实体等综合信息）"""
-        return await self.bot_client.get_observation()
+        """获取 Bot 的当前状态。默认返回紧凑观察，重点保留位置、生命值、战斗状态、敌对目标等高价值字段。"""
+        mode = self.observation_mode
+        if mode == "full":
+            return await self.bot_client.get_observation(
+                mode="full",
+                include_inventory=True,
+                include_chat=True,
+                include_events=True,
+                include_nearby_entities=True,
+            )
+        return await self.bot_client.get_observation(mode="compact")
     
     @filter.llm_tool(name="mc_find_block")
     async def tool_find_block(self, event: AstrMessageEvent, block_type: str, max_distance: int = 32):
@@ -1069,10 +1230,10 @@ class MineBuddyPlugin(Star):
     
     @filter.llm_tool(name="mc_start_skill")
     async def tool_start_skill(self, event: AstrMessageEvent, skill_name: str):
-        """作为后台任务启动一个已保存的技能
+        """作为后台任务启动一个已保存的技能。复杂任务优先考虑复用技能而不是临时拼长动作链。
         
         Args:
-            skill_name(string): 技能名称
+            skill_name(string): 技能名称，例如 战斗自保、清理附近威胁、打怪
         """
         skill = self.skill_manager.get_skill(skill_name)
         if not skill:
@@ -1101,7 +1262,7 @@ class MineBuddyPlugin(Star):
     
     @filter.llm_tool(name="mc_list_skills")
     async def tool_list_skills(self, event: AstrMessageEvent):
-        """查看所有已保存的技能"""
+        """查看所有已保存的技能。遇到多步任务、重复任务或战斗/生存场景时，建议先查看可复用技能。"""
         skills = self.skill_manager.list_skills()
         if not skills:
             return {"skills": [], "message": "当前没有保存的技能"}

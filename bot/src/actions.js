@@ -66,6 +66,99 @@ export class Actions {
     return closest;
   }
 
+  _findNearestMatchingEntity(predicate, maxDistance = 32) {
+    const botPosition = this.mcBot.entity?.position;
+    if (!botPosition) return null;
+
+    let closest = null;
+    let closestDistance = Infinity;
+    for (const entity of Object.values(this.mcBot.entities || {})) {
+      if (!entity || entity === this.mcBot.entity || !entity.position) continue;
+      if (typeof predicate === 'function' && !predicate(entity)) continue;
+      const distance = botPosition.distanceTo(entity.position);
+      if (distance > maxDistance) continue;
+      if (distance < closestDistance) {
+        closest = entity;
+        closestDistance = distance;
+      }
+    }
+
+    return closest;
+  }
+
+  _findNearestHostileEntity(maxDistance = 32, preferredType = null) {
+    return this._findNearestMatchingEntity((entity) => {
+      if (!this.bot.isHostileEntity(entity)) return false;
+      if (preferredType && !this._matchesEntityType(entity, preferredType)) return false;
+      return true;
+    }, maxDistance);
+  }
+
+  _getEntityLabel(entity, fallback = 'target') {
+    if (!entity) return fallback;
+    return entity.name || entity.username || entity.displayName || fallback;
+  }
+
+  _distanceToEntity(entity) {
+    const botPosition = this.mcBot.entity?.position;
+    if (!botPosition || !entity?.position) return null;
+    return botPosition.distanceTo(entity.position);
+  }
+
+  _resolveCombatThreat(maxDistance = 16, preferredType = null) {
+    const currentTarget = this.mcBot?.pvp?.target;
+    if (currentTarget && this.mcBot.entities?.[currentTarget.id]) {
+      const liveTarget = this.mcBot.entities[currentTarget.id];
+      const distance = this._distanceToEntity(liveTarget);
+      if (
+        distance !== null
+        && distance <= maxDistance
+        && (!preferredType || this._matchesEntityType(liveTarget, preferredType))
+      ) {
+        return liveTarget;
+      }
+    }
+
+    const nearestHostile = this._findNearestHostileEntity(maxDistance, preferredType);
+    if (nearestHostile) {
+      return nearestHostile;
+    }
+
+    if (preferredType) {
+      return this._findNearestEntity(preferredType, maxDistance);
+    }
+
+    return null;
+  }
+
+  _computeRetreatPosition(threat, retreatDistance = 8) {
+    const botPosition = this.mcBot.entity?.position;
+    if (!botPosition) return null;
+
+    let dx = 0;
+    let dz = 0;
+    if (threat?.position) {
+      dx = botPosition.x - threat.position.x;
+      dz = botPosition.z - threat.position.z;
+    }
+
+    if (Math.abs(dx) < 0.1 && Math.abs(dz) < 0.1) {
+      const yaw = this.mcBot.entity?.yaw || 0;
+      dx = Math.cos(yaw);
+      dz = Math.sin(yaw);
+    }
+
+    const length = Math.hypot(dx, dz) || 1;
+    dx /= length;
+    dz /= length;
+
+    return {
+      x: Math.floor(botPosition.x + dx * retreatDistance),
+      y: Math.floor(botPosition.y),
+      z: Math.floor(botPosition.z + dz * retreatDistance),
+    };
+  }
+
   async _equipBestMeleeWeapon() {
     const items = this.mcBot.inventory.items();
     if (!items.length) {
@@ -239,6 +332,33 @@ export class Actions {
     };
   }
 
+  async _engageCombatTarget(target, targetLabel = null) {
+    if (!target) {
+      return { success: false, message: 'No valid combat target found' };
+    }
+
+    const resolvedLabel = targetLabel || this._getEntityLabel(target);
+    let equippedWeapon = null;
+    try {
+      equippedWeapon = await this._equipBestMeleeWeapon();
+    } catch (error) {
+      console.warn(`[attack] Failed to equip melee weapon: ${error.message}`);
+    }
+
+    if (this._hasPvpBackend()) {
+      try {
+        const pvpResult = await this._attackWithPvp(target, resolvedLabel, equippedWeapon);
+        if (pvpResult) {
+          return pvpResult;
+        }
+      } catch (error) {
+        console.warn(`[attack] mineflayer-pvp failed, falling back to manual combat: ${error.message}`);
+      }
+    }
+
+    return await this._attackWithFallbackLoop(target, resolvedLabel, equippedWeapon);
+  }
+
   /**
    * Get available actions list
    * @returns {Array<{name: string, description: string, parameters: object}>}
@@ -279,6 +399,43 @@ export class Actions {
         name: 'attack',
         description: 'Attack the nearest entity of specified type',
         parameters: { entityType: 'string - Type of entity to attack (e.g., zombie, skeleton)' }
+      },
+      {
+        name: 'attackNearestHostile',
+        description: 'Attack the nearest hostile mob and automatically choose melee combat logic',
+        parameters: {
+          maxDistance: 'number - Optional: hostile scan distance (default: 16)',
+          preferredType: 'string - Optional: prefer a specific hostile type such as creeper or skeleton'
+        }
+      },
+      {
+        name: 'defendSelf',
+        description: 'Immediately defend against the current or nearest hostile threat',
+        parameters: {
+          maxDistance: 'number - Optional: threat scan distance (default: 16)'
+        }
+      },
+      {
+        name: 'retreat',
+        description: 'Disengage and retreat away from the current or nearest hostile threat',
+        parameters: {
+          distance: 'number - Optional: retreat distance in blocks (default: 8)',
+          maxDistance: 'number - Optional: threat scan distance (default: 16)'
+        }
+      },
+      {
+        name: 'stopCombat',
+        description: 'Stop current combat behavior and clear pathfinding combat pursuit',
+        parameters: {}
+      },
+      {
+        name: 'kiteCreeper',
+        description: 'Handle the nearest creeper with hit-and-retreat combat',
+        parameters: {
+          retreatDistance: 'number - Optional: distance to pull back after each hit (default: 6)',
+          maxCycles: 'number - Optional: max attack-retreat cycles (default: 3)',
+          maxDistance: 'number - Optional: creeper scan distance (default: 16)'
+        }
       },
       {
         name: 'collectBlock',
@@ -531,6 +688,16 @@ export class Actions {
           return await this.lookAt(params.x, params.y, params.z);
         case 'attack':
           return await this.attack(params.entityType);
+        case 'attackNearestHostile':
+          return await this.attackNearestHostile(params.maxDistance, params.preferredType);
+        case 'defendSelf':
+          return await this.defendSelf(params.maxDistance);
+        case 'retreat':
+          return await this.retreat(params.distance, params.maxDistance);
+        case 'stopCombat':
+          return await this.stopCombat();
+        case 'kiteCreeper':
+          return await this.kiteCreeper(params.retreatDistance, params.maxCycles, params.maxDistance);
         case 'collectBlock':
           return await this.collectBlock(params.blockType);
         case 'wait':
@@ -762,6 +929,19 @@ export class Actions {
   }
 
   /**
+   * Stop active combat and clear combat pursuit state.
+   */
+  async stopCombat() {
+    const stoppedPvp = await this._stopPvpCombat(true);
+    this.mcBot.pathfinder.setGoal(null);
+    this.mcBot.clearControlStates();
+    return {
+      success: true,
+      message: stoppedPvp ? 'Stopped combat and cleared pursuit' : 'Cleared movement/combat state',
+    };
+  }
+
+  /**
    * Jump once
    */
   async jump() {
@@ -790,25 +970,147 @@ export class Actions {
       return { success: false, message: `No ${targetLabel} found nearby` };
     }
 
-    let equippedWeapon = null;
+    return await this._engageCombatTarget(target, targetLabel);
+  }
+
+  /**
+   * Attack the nearest hostile threat.
+   */
+  async attackNearestHostile(maxDistance = 16, preferredType = null) {
+    const target = this._findNearestHostileEntity(maxDistance, preferredType);
+    if (!target) {
+      const label = preferredType ? `${preferredType} hostile` : 'hostile mob';
+      return { success: false, message: `No ${label} found within ${maxDistance} blocks` };
+    }
+
+    const targetLabel = this._getEntityLabel(target, preferredType || 'hostile');
+    return await this._engageCombatTarget(target, targetLabel);
+  }
+
+  /**
+   * Defend against the current or nearest hostile threat.
+   */
+  async defendSelf(maxDistance = 16) {
+    const threat = this._resolveCombatThreat(maxDistance);
+    if (!threat) {
+      return { success: false, message: `No hostile threat found within ${maxDistance} blocks` };
+    }
+
+    const targetLabel = this._getEntityLabel(threat, 'hostile');
+    return await this._engageCombatTarget(threat, targetLabel);
+  }
+
+  async _retreatFromThreat(threat, retreatDistance = 8) {
+    const retreatPosition = this._computeRetreatPosition(threat, retreatDistance);
+    if (!retreatPosition) {
+      return { success: false, message: 'Could not determine a retreat position' };
+    }
+
+    const moveResult = await this.goTo(retreatPosition.x, retreatPosition.y, retreatPosition.z);
+    return {
+      ...moveResult,
+      threat: this._getEntityLabel(threat, 'threat'),
+      retreatPosition,
+    };
+  }
+
+  /**
+   * Retreat away from the current or nearest hostile threat.
+   */
+  async retreat(distance = 8, maxDistance = 16) {
+    const threat = this._resolveCombatThreat(maxDistance);
+    if (!threat) {
+      await this.stopCombat();
+      return {
+        success: false,
+        message: `No hostile threat found within ${maxDistance} blocks; cleared combat state instead`,
+      };
+    }
+
+    return await this._retreatFromThreat(threat, distance);
+  }
+
+  /**
+   * Hit-and-retreat handling for creepers.
+   */
+  async kiteCreeper(retreatDistance = 6, maxCycles = 3, maxDistance = 16) {
+    await this._stopPvpCombat(true);
+    let target = this._findNearestHostileEntity(maxDistance, 'creeper');
+    if (!target) {
+      return { success: false, message: `No creeper found within ${maxDistance} blocks` };
+    }
+
     try {
-      equippedWeapon = await this._equipBestMeleeWeapon();
+      await this._equipBestMeleeWeapon();
     } catch (error) {
-      console.warn(`[attack] Failed to equip melee weapon: ${error.message}`);
+      console.warn(`[kiteCreeper] Failed to equip melee weapon: ${error.message}`);
     }
 
-    if (this._hasPvpBackend()) {
-      try {
-        const pvpResult = await this._attackWithPvp(target, targetLabel, equippedWeapon);
-        if (pvpResult) {
-          return pvpResult;
-        }
-      } catch (error) {
-        console.warn(`[attack] mineflayer-pvp failed, falling back to manual combat: ${error.message}`);
+    let hits = 0;
+    const cycles = Math.max(1, Math.min(maxCycles || 3, 8));
+    for (let cycle = 0; cycle < cycles; cycle += 1) {
+      const liveTarget = this.mcBot.entities?.[target.id];
+      if (!liveTarget) {
+        return {
+          success: hits > 0,
+          message: hits > 0 ? `Creeper was defeated or lost after ${hits} hit(s)` : 'Creeper disappeared before engagement',
+          hits,
+        };
       }
+
+      target = liveTarget;
+      const distance = this._distanceToEntity(target);
+      if (distance === null) {
+        return { success: false, message: 'Could not measure creeper distance' };
+      }
+
+      if (distance > 4.2) {
+        this.mcBot.pathfinder.setGoal(new goals.GoalFollow(target, 3), true);
+        await new Promise(resolve => setTimeout(resolve, 400));
+        continue;
+      }
+
+      if (distance < 2.2) {
+        const retreatResult = await this._retreatFromThreat(target, retreatDistance);
+        await new Promise(resolve => setTimeout(resolve, 250));
+        if (!retreatResult.success && hits === 0) {
+          return retreatResult;
+        }
+        continue;
+      }
+
+      this.mcBot.pathfinder.setGoal(null);
+      try {
+        await this.mcBot.lookAt(target.position.offset(0, Math.min(target.height || 1.6, 1.6), 0), true);
+      } catch (error) {
+        console.warn(`[kiteCreeper] lookAt failed: ${error.message}`);
+      }
+
+      await this.mcBot.attack(target);
+      hits += 1;
+      await new Promise(resolve => setTimeout(resolve, 650));
+
+      const refreshedTarget = this.mcBot.entities?.[target.id];
+      if (!refreshedTarget) {
+        return {
+          success: true,
+          message: `Defeated or lost creeper after ${hits} hit(s)`,
+          hits,
+        };
+      }
+
+      await this._retreatFromThreat(refreshedTarget, retreatDistance);
+      await new Promise(resolve => setTimeout(resolve, 300));
     }
 
-    return await this._attackWithFallbackLoop(target, targetLabel, equippedWeapon);
+    const liveTarget = this.mcBot.entities?.[target.id];
+    return {
+      success: !liveTarget,
+      message: liveTarget
+        ? `Stopped kiting creeper after ${hits} hit(s); target still alive`
+        : `Defeated or lost creeper after ${hits} hit(s)`,
+      hits,
+    };
   }
 
   /**

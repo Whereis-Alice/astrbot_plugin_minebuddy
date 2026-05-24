@@ -38,6 +38,7 @@
 - 内置采矿、战斗、钓鱼、采集木头、拾取物品等技能
 - 可选 Agent Loop，在低血量、低饥饿、附近有敌对生物或刚受击时主动唤醒 LLM
 - 插件启动时可自动拉起 Node.js Bot 服务
+- 新增省 token 优化：紧凑 observation、Agent Loop 轻量快照、MC 聊天摘要/混合注入模式
 
 ## 相比上游的当前改动
 
@@ -47,6 +48,8 @@
 - 接入了 `mineflayer-pvp` 作为优先近战执行后端，保留手写近战逻辑作为回退
 - 改善了敌对生物感知与受击感知
 - 观察数据里补充了 hostile、food、lastDamageSource 等更适合 Agent 决策的字段
+- 新增更明确的战斗工具：`mc_attack_nearest_hostile`、`mc_defend_self`、`mc_retreat`、`mc_stop_combat`、`mc_kite_creeper`
+- 新增内置战斗技能：`战斗自保`、`清理附近威胁`，降低 LLM 临时拼动作链的负担
 - 修复了内置 `打怪` 技能在脚本沙箱中的一个隐藏问题
 
 ## 目录结构
@@ -54,7 +57,8 @@
 ```text
 astrbot_plugin_minebuddy/
 ├── bot/                  # Node.js Mineflayer Bot 服务
-├── skills/               # 内置技能
+├── builtin_skills/       # MineBuddy 运行时内置技能
+├── skills/               # AstrBot 官方 Agent Skill 目录
 ├── main.py               # AstrBot 插件入口
 ├── bot_client.py         # Bot HTTP/WS 客户端
 ├── script_executor.py    # 脚本执行器
@@ -68,6 +72,26 @@ astrbot_plugin_minebuddy/
 
 - 当前本地目录、插件标识和仓库目标名已经统一为 `astrbot_plugin_minebuddy`。
 - 如果你后续还有其他部署副本，建议也统一使用这个目录名，避免和旧版 `astrbot_plugin_llmmc` 混淆。
+
+## Agent Skill
+
+仓库里现在直接按 AstrBot 官方兼容布局带了一份 Agent Skill：
+
+- `skills/minebuddy-agent-playbook`
+
+它和插件里的 `skills/` 不是一回事：
+
+- `builtin_skills/` 是 MineBuddy 运行时技能，给 `mc_start_skill` / `mc_execute_script` 用。
+- `skills/minebuddy-agent-playbook` 是给 AstrBot / Codex 的 LLM 用的“行为指引”，作用是让模型更会挑工具、少拼无谓动作链、在战斗时优先保命。
+
+这份 Agent Skill 目前重点约束这些行为：
+
+- 先 `mc_get_observation` / `mc_bot_status`，再做动作决策。
+- 普通战斗优先 `mc_attack_nearest_hostile`、`mc_defend_self`、`mc_retreat`、`mc_kite_creeper`。
+- 常见套路优先 `mc_start_skill` 调用内置技能，而不是每次都现场写脚本。
+- 只有现成工具和内置技能都不合适时，才退到 `mc_execute_script`。
+
+现在这份 Agent Skill 已经位于 AstrBot 官方认得的 `skills/` 目录下。按官方行为，安装插件后 AstrBot 会识别它，并且可以在 Skills 页面单独开关。
 
 ## 安装
 
@@ -116,16 +140,40 @@ npm install
 | `unified_group_umo` | 绑定群聊 UMO | `""` |
 | `bot_nickname` | 机器人在 MC 中展示的昵称 | 插件默认值 |
 | `enable_chat_response` | 是否把 LLM 回复发回 MC | `true` |
+| `mc_chat_bridge_mode` | MC 聊天注入模式：`direct` / `summary` / `hybrid`，推荐 `hybrid` | `hybrid` |
+| `mc_chat_batch_window_sec` | 聊天摘要窗口秒数，普通闲聊会在窗口内合并成一条摘要 | `15` |
+| `mc_chat_batch_max_messages` | 每条聊天摘要最多合并多少条普通闲聊 | `4` |
+| `mc_chat_direct_keywords` | `hybrid` 模式下直接注入上下文的关键词，逗号分隔 | `bot,机器人,面包,Alice` |
 | `enable_agent_loop` | 是否启用环境感知循环 | `false` |
 | `agent_tick_rate` | Agent Loop 间隔，单位秒 | `5` |
 | `health_threshold` | 低血量告警阈值 | `6` |
 | `food_threshold` | 低饥饿告警阈值 | `4` |
+| `observation_mode` | `mc_get_observation` 默认返回的数据量：`compact` / `full`，推荐 `compact` | `compact` |
+| `agent_loop_observation_mode` | Agent Loop 检测时使用的观察模式：`agent_loop` / `compact` | `agent_loop` |
 
 UMO 示例：
 
 ```text
 aiocqhttp_default:GroupMessage:123456789
 ```
+
+### 降低 token 消耗的推荐配置
+
+如果你的主要目标是“和 Bot 一起玩，但不要把 token 烧得太夸张”，建议优先这样配：
+
+- `mc_chat_bridge_mode = hybrid`
+- `mc_chat_batch_window_sec = 15`
+- `mc_chat_batch_max_messages = 4`
+- `observation_mode = compact`
+- `agent_loop_observation_mode = agent_loop`
+- `enable_agent_loop = false` 或保持较低频率，例如 `agent_tick_rate = 8~12`
+
+这套配置的思路是：
+
+- 点名 Bot、叫 Bot 做事、包含关键词的 MC 聊天，仍然会实时进入上下文，陪玩感还在。
+- 普通闲聊不会逐条灌给 LLM，而是按窗口合成一条 `[MC聊天摘要]`，保留氛围感但减少上下文膨胀。
+- `mc_get_observation` 默认只返回更适合决策的紧凑数据，不再每次都附带完整背包、聊天和事件历史。
+- Agent Loop 改用轻量快照做风险判断，降低后台唤醒和环境轮询带来的额外消耗。
 
 ## 常用工具
 
@@ -138,6 +186,11 @@ aiocqhttp_default:GroupMessage:123456789
 - `mc_jump`
 - `mc_look_at`
 - `mc_attack`
+- `mc_attack_nearest_hostile`
+- `mc_defend_self`
+- `mc_retreat`
+- `mc_stop_combat`
+- `mc_kite_creeper`
 - `mc_collect_block`
 - `mc_place_block`
 - `mc_eat`
@@ -179,6 +232,8 @@ aiocqhttp_default:GroupMessage:123456789
 - `挖矿`
 - `合成`
 - `打怪`
+- `战斗自保`
+- `清理附近威胁`
 - `钓鱼`
 - `采集木头`
 - `丢给玩家`

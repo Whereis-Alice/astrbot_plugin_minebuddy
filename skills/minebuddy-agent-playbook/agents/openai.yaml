@@ -1,0 +1,4 @@
+interface:
+  display_name: "MineBuddy Agent Playbook"
+  short_description: "Guide LLMs to use MineBuddy more safely and effectively"
+  default_prompt: "Use -agent-playbook to operate MineBuddy with safer combat decisions and better tool selection."

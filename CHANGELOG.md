@@ -2,6 +2,34 @@
 
 本文档记录 MineBuddy 分支的重要变更。
 
+## [1.3.0] - 2026-05-25
+
+### 新增
+
+- 新增聊天注入策略配置：`mc_chat_bridge_mode`、`mc_chat_batch_window_sec`、`mc_chat_batch_max_messages`、`mc_chat_direct_keywords`，可在“陪玩感”和“token 消耗”之间做平衡。
+- 新增 observation 模式配置：`observation_mode`、`agent_loop_observation_mode`，支持 LLM 默认使用紧凑观察、Agent Loop 使用专用轻量快照。
+
+### 优化
+
+- `mc_get_observation` 默认改为更紧凑的返回结构，优先保留位置、血量、战斗状态、敌对目标、玩家等高价值字段，减少重复和低价值上下文。
+- Node 侧 observation 现在按模式分层返回，完整背包、聊天、事件、附近实体改为按需包含，不再默认每次都返回。
+- Agent Loop 轮询改用更轻量的环境快照，降低后台监测引起的 token 和上下文消耗。
+- MC 聊天桥接支持 `hybrid` 模式：点名 Bot 或命中关键词的消息仍实时注入，普通闲聊则按时间窗口合并为摘要消息，尽量保留陪玩氛围同时减少无效上下文。
+
+## [1.2.5] - 2026-05-25
+
+### 新增
+
+- 新增更明确的战斗工具：`mc_attack_nearest_hostile`、`mc_defend_self`、`mc_retreat`、`mc_stop_combat`、`mc_kite_creeper`，减少 LLM 反复先扫描、再拼装动作链的负担。
+- 新增内置战斗技能 `战斗自保` 与 `清理附近威胁`，让 LLM 在复杂战斗场景里更容易复用稳定套路，而不是每次都临时生成脚本。
+- 新增 Agent Skill `skills/minebuddy-agent-playbook`，专门约束 LLM 在 MineBuddy 中的观察顺序、战斗工具优先级、内置技能优先级与脚本降级策略。
+
+### 优化
+
+- `mc_attack` 底层战斗执行逻辑重构为可复用的统一近战入口，新战斗工具与旧攻击接口会共享同一套武器选择、PvP 优先、手写回退逻辑。
+- 内置技能迁移逻辑从“仅首次复制”改为“缺失即补齐，并同步索引”，这样现有安装环境更新插件后也能自动拿到新增的内置技能。
+- 为兼容 AstrBot 官方插件 Skill 布局，插件自带运行时技能目录从 `skills/` 调整为 `builtin_skills/`，避免与 AstrBot 的 Agent Skill 自动发现机制冲突。
+
 ## [1.2.4] - 2026-05-25
 
 ### 优化

@@ -98,31 +98,81 @@ export class Observer {
     }
   }
 
+  _pickEntityFields(entity) {
+    if (!entity) return null;
+    return {
+      type: entity.type,
+      name: entity.name || entity.username || entity.displayName || 'unknown',
+      displayName: entity.displayName || entity.username || entity.name || 'unknown',
+      distance: entity.distance,
+      health: entity.health ?? null,
+      isHostile: Boolean(entity.isHostile),
+      isPlayer: Boolean(entity.isPlayer),
+      position: entity.position,
+    };
+  }
+
+  _summarizeInventory(items, maxItems = 8) {
+    const inventory = Array.isArray(items) ? items : [];
+    const foods = inventory
+      .filter(item => item?.isFood)
+      .slice(0, 3)
+      .map(item => ({
+        name: item.name,
+        count: item.count,
+        displayName: item.displayName,
+      }));
+
+    return {
+      totalTypes: inventory.length,
+      foods,
+      topItems: inventory.slice(0, maxItems).map(item => ({
+        name: item.name,
+        count: item.count,
+        displayName: item.displayName,
+        isFood: Boolean(item.isFood),
+      })),
+    };
+  }
+
   /**
    * Get complete observation of current state
    * @returns {object}
    */
-  getObservation() {
+  getObservation(options = {}) {
+    const {
+      includeInventory = false,
+      includeChat = false,
+      includeEvents = false,
+      includeNearbyEntities = false,
+      includePlayers = true,
+      consumeChat = false,
+      consumeEvents = false,
+      maxHostiles = 5,
+      maxPlayers = 5,
+      maxNearbyEntities = 8,
+      maxInventoryItems = 8,
+    } = options;
+
     const mcBot = this.bot.getMineflayerBot();
     const nearbyEntities = this.bot.getNearbyEntities(16);
     const hostileEntities = nearbyEntities
       .filter(entity => entity.isHostile)
-      .sort((a, b) => a.distance - b.distance);
+      .sort((a, b) => a.distance - b.distance)
+      .slice(0, maxHostiles)
+      .map(entity => this._pickEntityFields(entity));
     const players = nearbyEntities
       .filter(entity => entity.isPlayer)
-      .sort((a, b) => a.distance - b.distance);
-    
-    return {
+      .sort((a, b) => a.distance - b.distance)
+      .slice(0, maxPlayers)
+      .map(entity => this._pickEntityFields(entity));
+
+    const observation = {
       timestamp: Date.now(),
       position: this.bot.getPosition(),
       health: this.bot.getHealth(),
       combat: this.bot.getCombatStatus(),
-      nearbyEntities,
       hostileEntities,
-      players,
-      inventory: this.bot.getInventory(),
-      chatMessages: this.getRecentChat(false),
-      events: this.getRecentEvents(false),
       lastDamageSource: this.lastDamageSource,
       time: mcBot ? {
         timeOfDay: mcBot.time.timeOfDay,
@@ -132,6 +182,57 @@ export class Observer {
         isRaining: mcBot.isRaining
       } : null
     };
+
+    if (includePlayers) {
+      observation.players = players;
+    }
+
+    if (includeNearbyEntities) {
+      observation.nearbyEntities = nearbyEntities
+        .slice(0, maxNearbyEntities)
+        .map(entity => this._pickEntityFields(entity));
+    }
+
+    if (includeInventory) {
+      const inventory = this.bot.getInventory();
+      observation.inventory = inventory;
+      observation.inventorySummary = this._summarizeInventory(inventory, maxInventoryItems);
+    }
+
+    if (includeChat) {
+      observation.chatMessages = this.getRecentChat(consumeChat);
+    }
+
+    if (includeEvents) {
+      observation.events = this.getRecentEvents(consumeEvents);
+    }
+
+    return observation;
+  }
+
+  getCompactObservation(options = {}) {
+    return this.getObservation({
+      includeInventory: false,
+      includeChat: false,
+      includeEvents: false,
+      includeNearbyEntities: false,
+      includePlayers: true,
+      maxHostiles: 4,
+      maxPlayers: 3,
+      ...options,
+    });
+  }
+
+  getAgentLoopObservation() {
+    return this.getObservation({
+      includeInventory: true,
+      includeChat: false,
+      includeEvents: false,
+      includeNearbyEntities: false,
+      includePlayers: false,
+      maxHostiles: 4,
+      maxInventoryItems: 4,
+    });
   }
 
   /**

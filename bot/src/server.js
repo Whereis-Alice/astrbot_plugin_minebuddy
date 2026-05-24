@@ -151,7 +151,38 @@ class BotServer {
       if (!this.observer) {
         return res.status(400).json({ error: 'Bot not connected' });
       }
-      res.json(this.observer.getObservation());
+      const mode = String(req.query.mode || 'compact').toLowerCase();
+      const includeChat = String(req.query.includeChat || 'false').toLowerCase() === 'true';
+      const includeEvents = String(req.query.includeEvents || 'false').toLowerCase() === 'true';
+      const includeInventory = String(req.query.includeInventory || 'false').toLowerCase() === 'true';
+      const includeNearbyEntities = String(req.query.includeNearbyEntities || 'false').toLowerCase() === 'true';
+      const consumeChat = String(req.query.consumeChat || 'false').toLowerCase() === 'true';
+      const consumeEvents = String(req.query.consumeEvents || 'false').toLowerCase() === 'true';
+
+      if (mode === 'full') {
+        return res.json(this.observer.getObservation({
+          includeInventory: includeInventory || true,
+          includeChat,
+          includeEvents,
+          includeNearbyEntities: includeNearbyEntities || true,
+          includePlayers: true,
+          consumeChat,
+          consumeEvents,
+        }));
+      }
+
+      if (mode === 'agent_loop') {
+        return res.json(this.observer.getAgentLoopObservation());
+      }
+
+      res.json(this.observer.getCompactObservation({
+        includeInventory,
+        includeChat,
+        includeEvents,
+        includeNearbyEntities,
+        consumeChat,
+        consumeEvents,
+      }));
     });
 
     // Execute action

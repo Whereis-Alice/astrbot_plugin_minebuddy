@@ -55,9 +55,29 @@ class BotClient:
         response.raise_for_status()
         return response.json()
     
-    async def get_observation(self) -> Dict[str, Any]:
+    async def get_observation(
+        self,
+        mode: str = "compact",
+        include_inventory: bool = False,
+        include_chat: bool = False,
+        include_events: bool = False,
+        include_nearby_entities: bool = False,
+        consume_chat: bool = False,
+        consume_events: bool = False,
+    ) -> Dict[str, Any]:
         """Get current observation from bot"""
-        response = await self.http_client.get("/observation")
+        response = await self.http_client.get(
+            "/observation",
+            params={
+                "mode": mode,
+                "includeInventory": str(include_inventory).lower(),
+                "includeChat": str(include_chat).lower(),
+                "includeEvents": str(include_events).lower(),
+                "includeNearbyEntities": str(include_nearby_entities).lower(),
+                "consumeChat": str(consume_chat).lower(),
+                "consumeEvents": str(consume_events).lower(),
+            },
+        )
         response.raise_for_status()
         return response.json()
     
