@@ -23,7 +23,7 @@ from .script_executor import ScriptExecutor
     "astrbot_plugin_minebuddy",
     "MineBuddy",
     "MineBuddy Minecraft Bot 插件 - MC/群聊上下文互通 + LLM工具控制Bot",
-    "1.2.1",
+    "1.2.2",
     "",
 )
 class MineBuddyPlugin(Star):
@@ -80,6 +80,7 @@ class MineBuddyPlugin(Star):
         # 子进程 & Agent loop
         self._bot_process = None
         self._bot_log_thread = None
+        self._bot_service_ready = False
         self._agent_task: Optional[asyncio.Task] = None
         self._last_health_alert = 0
         self._last_food_alert = 0
@@ -90,7 +91,9 @@ class MineBuddyPlugin(Star):
         """插件初始化"""
         # 自动启动 Bot 服务
         if self.auto_start_bot:
-            await self._start_bot_service()
+            self._bot_service_ready = await self._start_bot_service()
+        else:
+            self._bot_service_ready = True
         
         # 初始化 Bot 客户端
         self.bot_client = BotClient(self.bot_http_url, self.bot_ws_url)
@@ -114,7 +117,19 @@ class MineBuddyPlugin(Star):
         
         # 注册 WS 事件处理器并启动监听
         self.bot_client.add_event_handler(self._on_bot_event)
-        await self.bot_client.start_ws_listener()
+        can_start_ws = True
+        if self.auto_start_bot and not self._bot_service_ready:
+            can_start_ws = False
+            logger.error(
+                "[MineBuddy] Node Bot 服务未就绪，已跳过 WebSocket 监听。"
+                " 请先在插件服务器上的 bot 目录执行 npm install，然后重载插件。"
+            )
+        elif not await self.bot_client.health_check():
+            can_start_ws = False
+            logger.warning("[MineBuddy] Bot HTTP 服务当前不可用，暂不启动 WebSocket 监听。")
+
+        if can_start_ws:
+            await self.bot_client.start_ws_listener()
         
         # 启动 Agent Loop（如果启用）
         if self.enable_agent_loop:
@@ -157,7 +172,13 @@ class MineBuddyPlugin(Star):
         if not server_js.exists():
             logger.error(f"[MineBuddy] Bot 入口文件不存在: {server_js}")
             logger.error(f"[MineBuddy] 请在配置中设置正确的 bot_dir，或将 Bot 目录放在插件同级")
-            return
+            return False
+
+        missing_deps = self._find_missing_node_dependencies(bot_path)
+        if missing_deps:
+            logger.error(f"[MineBuddy] Node 依赖缺失: {', '.join(missing_deps)}")
+            logger.error(f"[MineBuddy] 请在插件服务器执行: cd {bot_path} && npm install")
+            return False
         
         # 构造环境变量，传入 MC 配置
         env = os.environ.copy()
@@ -195,11 +216,32 @@ class MineBuddyPlugin(Star):
                     f"[MineBuddy] Bot 服务启动后很快退出，退出码: {self._bot_process.returncode}。"
                     " 请检查上面的 [MineBuddy/Node] 日志。"
                 )
-            
+                if self._is_local_port_open(self.bot_service_port):
+                    logger.warning(
+                        f"[MineBuddy] 端口 {self.bot_service_port} 仍然有服务在监听，"
+                        " 可能是旧的 Bot 进程没有退出，当前 WebSocket/HTTP 连接到的未必是这次启动的进程。"
+                    )
+                return False
+
+            if not await self._wait_for_bot_service_health():
+                logger.error(
+                    f"[MineBuddy] Bot 服务在端口 {self.bot_service_port} 上未通过健康检查，"
+                    " 请检查 Node 依赖、端口占用和上面的 [MineBuddy/Node] 日志。"
+                )
+                if self._is_local_port_open(self.bot_service_port):
+                    logger.warning(
+                        f"[MineBuddy] 端口 {self.bot_service_port} 已被其他进程占用，"
+                        " 当前插件可能连到的是旧服务。"
+                    )
+                return False
+
+            return True
         except FileNotFoundError:
             logger.error("[MineBuddy] 未找到 node 命令，请确保 Node.js 已安装并在 PATH 中")
+            return False
         except Exception as e:
             logger.error(f"[MineBuddy] 启动 Bot 服务失败: {e}")
+            return False
     
     async def _stop_bot_service(self):
         """停止 Bot 服务子进程"""
@@ -250,6 +292,62 @@ class MineBuddyPlugin(Star):
             logger.warning(f"{prefix} {line}")
         else:
             logger.info(f"{prefix} {line}")
+
+    def _find_missing_node_dependencies(self, bot_path):
+        """Return missing required Node dependencies listed in package.json."""
+        import json
+        from pathlib import Path
+
+        package_json_path = Path(bot_path) / "package.json"
+        node_modules_path = Path(bot_path) / "node_modules"
+        if not package_json_path.exists():
+            return []
+
+        try:
+            package_json = json.loads(package_json_path.read_text(encoding="utf-8"))
+        except Exception as e:
+            logger.warning(f"[MineBuddy] 读取 package.json 失败，跳过依赖检查: {e}")
+            return []
+
+        dependencies = package_json.get("dependencies", {})
+        missing = []
+        for dep_name in dependencies:
+            dep_path = node_modules_path.joinpath(*dep_name.split("/"))
+            if not dep_path.exists():
+                missing.append(dep_name)
+
+        return missing
+
+    def _is_local_port_open(self, port: int) -> bool:
+        """Check whether localhost:port is currently accepting TCP connections."""
+        import socket
+
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.settimeout(0.5)
+            return sock.connect_ex(("127.0.0.1", int(port))) == 0
+
+    async def _wait_for_bot_service_health(self, timeout: float = 8.0) -> bool:
+        """Wait until the local bot HTTP service reports healthy."""
+        import httpx
+
+        deadline = asyncio.get_running_loop().time() + timeout
+        health_url = f"http://127.0.0.1:{self.bot_service_port}/health"
+
+        while asyncio.get_running_loop().time() < deadline:
+            if self._bot_process and self._bot_process.poll() is not None:
+                return False
+
+            try:
+                async with httpx.AsyncClient(timeout=2.0) as client:
+                    response = await client.get(health_url)
+                    if response.status_code == 200:
+                        return True
+            except Exception:
+                pass
+
+            await asyncio.sleep(0.5)
+
+        return False
     
     def _migrate_bundled_skills(self, target_dir: str):
         """首次运行时，将插件自带的技能复制到数据目录"""
